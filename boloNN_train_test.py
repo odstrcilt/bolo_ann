@@ -359,7 +359,7 @@ if __name__ == "__main__":
     X, Y, P = load_data(f_path + 'synthetics_bolom_data_5.h5')
 
     #real data datset, without powers
-    # shot_time, rX, rY = load_real_data(f_path + 'real_bolom_data_2.h5')
+    shot_time, rX, rY = load_real_data(f_path + 'real_bolom_data_2.h5')
     # --- Train the final model with optimized hyperparameters ---
     key = jax.random.PRNGKey(0)
     k = 100
