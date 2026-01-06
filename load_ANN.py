@@ -5,7 +5,7 @@ from matplotlib.pylab import plt
 
 
 efit_name = ['RXPT1', 'RXPT2', 'ZXPT1' ,'ZXPT2' , 'Z0','R0' ,'TRIBOT', 'TRITOP', 'KAPPA' ,'AMINOR', 'DRSEP']
-power_params = ['P_SOL','P_ldivL','P_ldivR','P_udivL','P_udivR','P_ldiv','P_udiv', 'P_core','P_axis','P_tot']
+power_params = ['P_SOL','P_ldivi','P_ldivo','P_udivi','P_udivo','P_ldiv','P_udiv', 'P_core','P_axis','P_tot']
 
 
 
@@ -16,11 +16,16 @@ def silu(x):
     """NumPy implementation of the SiLU (Swish) activation function."""
     return x / (1 + np.exp(-x))
 
+def relu(x):
+    return np.maximum(0, x)
+
 def mlp(params, x):
     """implementation of the MLP forward pass."""
     for W, b in params[:-1]:
         x = np.dot(x, W) + b
-        x = silu(x)
+        #x = silu(x)
+        x =  relu(x) #Rectified linear unit activation function.
+
     W, b = params[-1]
     return np.dot(x, W) + b
 
@@ -46,79 +51,63 @@ def load_network(filepath):
         # Load linear part parameters
         Wlin = f['linear/Wlin'][:]
         W0 = f['linear/W0'][:]
-
+        low_rank_basis = f['basis'][:]
+        inv_basis = f['inv_basis'][:]
+      
+      
+      
     print(f"Network loaded successfully from {filepath}")
-    return params, Wlin, W0
+    
+    
+    missing_channels =  ['U01', 'L11', 'L19', 'L20']
+    #missing_channels +=  ['U10', 'L13', 'L16', 'L12']            
+    bolo_channels = [fan+'%.2d'%ich for fan in 'UL' for ich in range(1,25)]
+                    
+    
+    invalid = np.array([ch in missing_channels for ch in bolo_channels])
+    
+    
+    pinv_low_rank_basis = np.linalg.pinv(low_rank_basis[~invalid])
+    pinv_low_rank_basis_full = np.zeros_like(low_rank_basis.T)
+    pinv_low_rank_basis_full[:,~invalid] = pinv_low_rank_basis
+    
+    print(inv_basis)
+    
+    print(pinv_low_rank_basis_full)
+    
+    return params, Wlin, W0, pinv_low_rank_basis_full
 
 # ------------------------
 # Main Application Logic
 # ------------------------
-def apply_model(params, Wlin, W0, X, Y, batch_size=4096):
+def apply_model(nn_params, X, Y ):
     """
     Applies the loaded network to input data X and Y to get predictions P_hat.
     Computes W_hat = network(X) and then P_hat = W_hat @ Y.
     """
+    
+    params, Wlin, W0, pinv_low_rank_basis = nn_params
 
-    num_ch = Y.shape[1] # Inferred from problem, should be passed or stored if variable
     Dout = W0.size
-    num_p = Dout // num_ch
 
    
 
     # Predict the weights W_hat for the batch
     W_hat_flat = predict(params, Wlin, W0, X)
-    W_hat = W_hat_flat.reshape(-1, num_p, num_ch)
 
     # Apply the weights to Y to get the final prediction P_hat
-    P_hat = np.einsum("nd,nkd->nk", Y, W_hat)
+  
+    num_b = pinv_low_rank_basis.shape[0]
+    num_p = Dout // num_b
+
+    W_hat = W_hat_flat.reshape(-1, num_p, num_b)
+ 
+    P_hat = np.einsum('aw,bw,bta->bt', pinv_low_rank_basis, Y, W_hat)  # (Nt,n_p)
 
 
     return P_hat
 
-
-# ------------------------
-# Data Loading
-# ------------------------
-def load_data(file_path):
-    """Loads and preprocesses data from the HDF5 file."""
-    print(f"Loading data from {file_path}...")
-
-    with h5py.File(file_path, "r") as f:
-        channels = f["channels"][:]
-
-        EFIT_values = np.array([f[k][:] for k in efit_name])
-        power_values = np.array([f[k][:] / 1e6 for k in power_params]) # MW
-        synthetics_brightness = f["synthetics_brightness+noise"][:] / 1e6 # MW/m^2
-        missing_channels = [ch.strip() for ch in f["missing_channels"][:]]
-    
-    # --- Data Cleaning & Reshaping (as in original script) ---
-    EFIT_values[-1, (EFIT_values[-1] > 0.3) | (EFIT_values[-1] < -0.3)] = 0
-    EFIT_values[2, EFIT_values[0] > 1.8] = -1.15
-    EFIT_values[0, EFIT_values[0] > 1.8] = 1.25
-    EFIT_values[2, EFIT_values[0] < 0] = -1.15
-    EFIT_values[0, EFIT_values[0] < 0] = 1.25
-    EFIT_values[3, EFIT_values[1] > 1.8] = 1.2
-    EFIT_values[1, EFIT_values[1] > 1.8] = 1.2
-    EFIT_values[3, EFIT_values[1] < 0] = 1.2
-    EFIT_values[1, EFIT_values[1] < 0] = 1.2
-
-    valid_ch = ~np.in1d(channels, missing_channels)
-    synthetics_brightness_valid = synthetics_brightness[:, valid_ch]
-    nch = valid_ch.sum()
-
-    Y = synthetics_brightness_valid.T.reshape(nch, -1, 1000).swapaxes(0, 1)
-    P = power_values.reshape(len(power_params), -1, 1000).swapaxes(0, 1)
-    X = EFIT_values.T
-
-    # Ensure contiguous arrays for better performance
-    X = np.ascontiguousarray(X, dtype=np.float32)
-    Y = np.ascontiguousarray(Y, dtype=np.float32)
-    P = np.ascontiguousarray(P, dtype=np.float32)
-    print("Data loading complete.")
-    return X, Y, P
-
-
-
+ 
 
 def get_region_mask(t, rvec, zvec, ATIME, PsinEmiss,BdMat,ZXPT1,ZXPT2,RXPT1,RXPT2,R0,Z0):
     
@@ -131,17 +120,210 @@ def get_region_mask(t, rvec, zvec, ATIME, PsinEmiss,BdMat,ZXPT1,ZXPT2,RXPT1,RXPT
     div_up_side = (R - RXPT2[a_nearest]) * (Z0[a_nearest] - ZXPT2[a_nearest]) - (Z - ZXPT2[a_nearest]) * (R0[a_nearest] - RXPT2[a_nearest])
    
     mask = PsinEmiss  * 0 # FarSOL
-    mask[PsinEmiss<1.1] = 5 # edge
-    mask[PsinEmiss<0.9] = 6 # core
+    mask[PsinEmiss<1.2] = 5 # sol
+    #mask[PsinEmiss<1.0] = 8 # ped #BUG    
+    mask[PsinEmiss<0.9] = 6 # core #BUG
     mask[PsinEmiss<0.2] = 7 # axis
-    mask[(Z < ZXPT1[a_nearest] + 0.2) & (div_low_side > 0) & (ZXPT1[a_nearest] > -2)&(PsinEmiss < 1.2) ] = 1 # ldivR
-    mask[(Z < ZXPT1[a_nearest] + 0.2) & (div_low_side < 0) & (ZXPT1[a_nearest] > -2)&(PsinEmiss < 1.2) ] = 2 # ldivL
-    mask[(Z > ZXPT2[a_nearest] - 0.2) & (div_up_side < 0) & (ZXPT2[a_nearest] > -2)&(PsinEmiss < 1.2) ] = 3 # udivR
-    mask[(Z > ZXPT2[a_nearest] - 0.2) & (div_up_side > 0) & (ZXPT2[a_nearest] > -2)&(PsinEmiss < 1.2)] = 4 # udivL
+    mask[(Z < ZXPT1[a_nearest] + 0.2) & (div_low_side > 0) & (ZXPT1[a_nearest] > -2)&(PsinEmiss < 1.2) ] = 1 # ldivo
+    mask[(Z < ZXPT1[a_nearest] + 0.2) & (div_low_side < 0) & (ZXPT1[a_nearest] > -2)&(PsinEmiss < 1.2) ] = 2 # ldivi
+    mask[(Z > ZXPT2[a_nearest] - 0.2) & (div_up_side < 0) & (ZXPT2[a_nearest] > -2)&(PsinEmiss < 1.2) ] = 3 # udivo
+    mask[(Z > ZXPT2[a_nearest] - 0.2) & (div_up_side > 0) & (ZXPT2[a_nearest] > -2)&(PsinEmiss < 1.2)] = 4 # udivi
     mask[ BdMat ] = -1
     
+    #BUG it it consistent? OR SOL is just everything outside of 0.9?
+
+    #if t  > 10:
+        ##embed()
+        #plt.pcolormesh(R,Z,mask, cmap='jet')
+        #plt.contour(R,Z,1-PsinEmiss, levels = 1-np.arange(0,1.5,0.1)[::-1],colors='gray')
+        #plt.axis('equal')
+        #plt.xlabel('R [m]')
+        #plt.ylabel('z [m]')
+        #plt.show()
+        
+        
+
+        
+            
     return mask
 
+
+def get_powers(power, mask):
+     
+    emiss_regions = {}
+
+    emiss_regions['P_ldivo'] = np.sum(power[mask == 1],0)
+    emiss_regions['P_ldivi'] = np.sum(power[mask == 2],0)
+    emiss_regions['P_ldiv'] = np.sum(power[(mask == 1)|(mask==2) ],0)
+    
+    emiss_regions['P_udivo'] = np.sum(power[mask == 3],0)
+    emiss_regions['P_udivi'] =  np.sum(power[mask == 4],0)
+    emiss_regions['P_udiv'] = np.sum(power[(mask == 3)|(mask==4)],0)
+
+    #emiss_regions['P_SOL'] = np.sum(power[(mask == 0)| (mask==5)],0)
+    emiss_regions['P_SOL_far'] = np.sum(power[(mask == 0)],0)
+    emiss_regions['P_SOL'] = np.sum(power[(mask==5)],0)
+    #emiss_regions['P_ped'] = np.sum(power[(mask==8)],0)
+
+    emiss_regions['P_axis'] = np.sum(power[mask == 7],0)
+    emiss_regions['P_core'] = np.sum(power[(mask == 7)|(mask==6)],0)
+    emiss_regions['P_tot'] = np.sum(power[mask>=0],0)
+    
+    return emiss_regions
+
+
+
+
+
+
+def load_efit(shot, efit='EFIT01', load_psi=True):
+    
+    
+    import MDSplus
+    mdsserver = 'localhost'
+    MDSconn = MDSplus.Connection(mdsserver)
+
+    tree = efit
+    MDSconn.openTree(tree, shot)
+
+    
+    
+    AEQDSK = {}
+    for ename in efit_name:
+        AEQDSK[ename] = MDSconn.get(f'\\{tree}::TOP.RESULTS.AEQDSK:{ename}').data() 
+    
+    ATIME = MDSconn.get(f'\\{tree}::TOP.RESULTS.AEQDSK:ATIME').data() /1e3
+
+
+    # --- Data Cleaning & Reshaping (as in original script) ---
+    AEQDSK['DRSEP'][AEQDSK['DRSEP'] > 0.3] = 0.06
+    AEQDSK['DRSEP'][AEQDSK['DRSEP'] < -0.3] = -0.07
+
+
+    missing_lower_Xpoint = AEQDSK['RXPT1'] < 0
+    missing_upper_Xpoint = AEQDSK['RXPT2'] < 0
+    AEQDSK['ZXPT1'][missing_lower_Xpoint] = -1.33
+    AEQDSK['RXPT1'][missing_lower_Xpoint] = 1.28
+    AEQDSK['ZXPT2'][missing_upper_Xpoint] = 1.4
+    AEQDSK['RXPT2'][missing_upper_Xpoint] = 1.23
+    
+    #TODO invalid EFIT?? 
+    valid = AEQDSK['RXPT1'] != 0
+    ATIME = ATIME[valid]
+    
+    for k in AEQDSK.keys():
+        AEQDSK[k] = AEQDSK[k][valid]
+ 
+
+    if load_psi:
+        
+        SSIMAG = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:SSIMAG').data()
+        valid = SSIMAG != 0
+        SSIMAG = SSIMAG[valid]
+        
+
+        PSIRZ = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:PSIRZ').data()[valid]
+        GTIME = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:GTIME').data()[valid]/1e3
+        SSIBRY = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:SSIBRY').data()[valid]
+
+        Rgrid = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:R').data()
+        Zgrid = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:Z').data()
+        
+        
+        PSIN = (PSIRZ - SSIMAG[:,None,None])/(SSIBRY-SSIMAG)[:,None,None]
+ 
+        return ATIME, AEQDSK, Rgrid, Zgrid, PSIN, GTIME
+    
+ 
+    
+    return ATIME, AEQDSK 
+
+    
+
+def load_GAPROFILES(shot):
+
+    import os, re
+    folder = './GAPROFILES/'
+    files = sorted(f for f in os.listdir(folder) if re.match(r'[ie]\d+\.\d+', f))
+
+    ie_labels = ['i', 'e']
+    times_per_shot =  {"i": [], "e": []}
+    raw_data = {}
+    R_vals = None
+    Z_vals = None
+
+    for fname in files:
+        kind = fname[0]                # i or e
+        shot_file = int(fname[1:7])         # e160528.03000 -> 160528
+        t_ms = int(fname[8:])          # 03000
+        if shot != shot_file:
+            continue
+
+        path = os.path.join(folder, fname)
+        arr = np.loadtxt(path)
+
+        R = arr[:, 0]
+        Z = arr[:, 1]
+        P = arr[:, 2]
+
+        if R_vals is None:
+            R_vals = np.unique(R)
+        if Z_vals is None:
+            Z_vals = np.unique(Z)
+ 
+        times_per_shot[kind].append(t_ms)
+        raw_data[(shot, kind, t_ms)] = P.reshape(len(Z_vals), len(R_vals))
+        
+        
+    if len(raw_data) == 0:
+        return {} 
+ 
+    nz, nr = len(Z_vals), len(R_vals)
+    
+    ATIME, AEQDSK_data = load_efit(shot, efit='EFIT01', load_psi=False)
+ 
+
+ 
+    times = sorted(times_per_shot['i'])
+    data_shot = np.zeros(( 2,  len(times), nz, nr), dtype='single')
+    for ie_i, ie in enumerate(ie_labels):
+        for t_i, t_ms in enumerate(times):
+            data_shot[ie_i, t_i] = raw_data[(shot, ie, t_ms)]
+ 
+    dr = R_vals[1]-R_vals[0]
+    dz = Z_vals[1]-Z_vals[0]
+    R,Z = np.meshgrid(R_vals, Z_vals)
+
+    #PsinEmiss = np.zeros_like(gres)
+     
+    emiss_regions = {}
+    from scipy.interpolate import RectBivariateSpline
+    for it, t in enumerate(np.array(times) / 1000):
+
+        PsinEmiss =  data_shot[1, it]
+        emiss =  data_shot[0, it]
+
+
+        mask = get_region_mask(t, R_vals, Z_vals, ATIME, PsinEmiss, np.bool_(PsinEmiss * 0), 
+                                AEQDSK_data['ZXPT1'],AEQDSK_data['ZXPT2'],
+                                AEQDSK_data['RXPT1'],AEQDSK_data['RXPT2'],
+                                AEQDSK_data['R0'], AEQDSK_data['Z0'])
+        
+
+        
+        power = np.single(emiss  * R  * 2 * np.pi * dr * dz)  * 1e6 #W per cell
+        
+        for k, v in get_powers(power, mask).items():
+            emiss_regions.setdefault(k,[])
+            emiss_regions[k].append(v)
+         
+ 
+    
+    emiss_regions = {p: np.array(v) for p,v in emiss_regions.items()}
+    emiss_regions['tvec'] =  np.array(times) / 1000
+    
+ 
+    return emiss_regions
 
 
 def load_tomography(shot):
@@ -200,7 +382,8 @@ def load_tomography(shot):
 
     PsinEmiss = np.zeros_like(gres)
      
-    emiss_regions = {p:[] for p in power_params}
+    emiss_regions = {}
+
     from scipy.interpolate import RectBivariateSpline
     for it, t in enumerate(emiss['tvec']):
         g_nearest = np.argmin(np.abs(GTIME-t))
@@ -210,27 +393,14 @@ def load_tomography(shot):
         mask = get_region_mask(t, rvec, zvec, ATIME, PsinEmiss , emiss['BdMat'], 
                                 AEQDSK_data['ZXPT1'],AEQDSK_data['ZXPT2'],
                                 AEQDSK_data['RXPT1'],AEQDSK_data['RXPT2'],
-                                AEQDSK_data['R0'],AEQDSK_data['Z0'])
+                                AEQDSK_data['R0'],   AEQDSK_data['Z0'])
         
         power = np.single(gres[:,:,it] * R  * 2 * np.pi * dr * dz) #W per cell
  
-        emiss_regions['P_ldivL'].append(np.sum(power[mask == 2],0))
-        emiss_regions['P_ldivR'].append( np.sum(power[mask == 1],0))
-        emiss_regions['P_ldiv'].append(np.sum(power[(mask == 1)|(mask==2) ],0))
-        
-        emiss_regions['P_udivL'].append( np.sum(power[mask == 4],0))
-        emiss_regions['P_udivR'].append(np.sum(power[mask == 3],0))
-        emiss_regions['P_udiv'].append(np.sum(power[(mask == 3)|(mask==4)],0))
-
-        emiss_regions['P_SOL'].append(np.sum(power[(mask == 0)|(mask==1)],0))
-
-        emiss_regions['P_axis'].append(np.sum(power[mask == 7],0))
-        emiss_regions['P_core'].append(np.sum(power[(mask == 7)|(mask==6)],0))
-        emiss_regions['P_tot'].append(np.sum(power[mask>=0],0))
-  
-
-            
-    
+        for k, v in get_powers(power, mask).items():
+            emiss_regions.setdefault(k,[])
+            emiss_regions[k].append(v)
+          
     emiss_regions = {p: np.array(v) for p,v in emiss_regions.items()}
     emiss_regions['tvec'] = emiss['tvec']
     
@@ -238,15 +408,42 @@ def load_tomography(shot):
     return emiss_regions
 
 
-def load_mds_data(shot, EFIT = 'EFITRT1', realtime_bolo=True):
+# ------------------------
+# Data loading
+# ------------------------
+def clip_EFIT_inputs(EFIT_values):
+    
+    missing_lower_Xpoint = EFIT_values[0] < 0
+    missing_upper_Xpoint = EFIT_values[1] < 0
+ 
+    
+    valid = EFIT_values[0] != 0
+ 
+    EFIT_values[-1, EFIT_values[-1] > 0.3] = 0.06 #usualy missing one X-point
+    EFIT_values[-1, EFIT_values[-1] < -0.3] = -0.07#usualy missing one X-point
+    EFIT_values[2, missing_lower_Xpoint] = -1.33
+    EFIT_values[0, missing_lower_Xpoint] = 1.28
+    EFIT_values[3, missing_upper_Xpoint] = 1.4
+    EFIT_values[1, missing_upper_Xpoint] = 1.23
+    
+    
+    return valid, EFIT_values
+
+
+
+def load_mds_data(shot, EFIT = 'EFIT01', realtime_bolo=True):
 
     if realtime_bolo:
         print('Load realtime BOLO data')
+        EFIT = 'EFITRT1'
     else:
         print('Load standart BOLO data')
-        
+    
+    
+    #EFIT = 'EFITRT1'
+
     import MDSplus
-    mdsserver = 'atlas.gat.com'
+    mdsserver = 'localhost'
     MDSconn = MDSplus.Connection(mdsserver)
 
    
@@ -271,9 +468,7 @@ def load_mds_data(shot, EFIT = 'EFITRT1', realtime_bolo=True):
         TDIcall = "_x=\\BOLOM::TOP.PRAD_01.POWER:"
         MDSconn.openTree('BOLOM', shot)
 
-
     from scipy.signal import lfilter
-
     def lowpass_filter(x, alpha):
         b = [alpha]
         a = [1, -(1 - alpha)]
@@ -285,14 +480,18 @@ def load_mds_data(shot, EFIT = 'EFITRT1', realtime_bolo=True):
         for ich in range(24):
             ch = f'{fan}{ich+1:02}'
        
-            if ch in missing_channels:
-                continue
+            #if ch in missing_channels:
+                #continue
             
             #reatime hadata by itself has ~50ms delay
             if realtime_bolo:
-                data = MDSconn.get(f'_x=PTDATA2("DGSDPWR{ch}", {shot})').data()
+                if ch in missing_channels:
+                    data = MDSconn.get(f'_x=PTDATA2("DGSDPWRL01", {shot})').data()*0 
+                else:
+                    data = MDSconn.get(f'_x=PTDATA2("DGSDPWR{ch}", {shot})').data()
                 #this adds a small delay, but negligible compared to the existing delay in the data
                 data = lowpass_filter(data, alpha=0.01)
+                
             else:
                 data = MDSconn.get(TDIcall+f'BOL_{ch}_P').data() #W
             if len(data) <= 1:
@@ -301,28 +500,29 @@ def load_mds_data(shot, EFIT = 'EFITRT1', realtime_bolo=True):
             data *= etendue[fan][ich] * 1e4 #W/m^2
             bolo_brightness.append(data) 
             
-            
-            
-            
+             
     tvec = MDSconn.get('dim_of(_x)').data()  #ms
     bolo_brightness = np.array(bolo_brightness)
     
     
+        
+    #NOTE Important correct one broken channel
+    if shot > 196700:
+        bolo_brightness[45] = (bolo_brightness[44]+bolo_brightness[46]) / 2
+ 
+    
     MDSconn.openTree('BOLOM', shot)
 
 
-    power_params = ['P_SOL','P_ldivL','P_ldivR','P_udivL','P_udivR','P_ldiv','P_udiv', 'P_core','P_axis','P_tot']
-
     legacy_power = {}
+    legacy_power['time'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.TIME').data() #ms
     legacy_power['P_tot'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.PRAD.PRAD_TOT').data() #W
     legacy_power['P_ldiv'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.PRAD.PRAD_DIVL').data() #W
-    legacy_power['P_udiv'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.PRAD.PRAD_DIVU').data() #W
-    legacy_power['time'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.TIME').data() #ms
-  
+    legacy_power['P_udiv'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.PRAD.PRAD_DIVU').data() #W  
     legacy_power['P_core'] = MDSconn.get('\\BOLOM::TOP.BOLFIT01.ONED.POWER_CORE').data() #W
     legacy_power['P_SOL'] = MDSconn.get('_x=\\BOLOM::TOP.BOLFIT01.ONED.POWER_SOL').data() #W
-    tvec_bolo = MDSconn.get('dim_of(_x)').data()  #ms
     
+    tvec_bolo = MDSconn.get('dim_of(_x)').data()  #ms
     legacy_power['P_core'] = np.interp(legacy_power['time'], tvec_bolo, legacy_power['P_core'])
     legacy_power['P_SOL'] = np.interp(legacy_power['time'], tvec_bolo, legacy_power['P_SOL'])
     
@@ -332,28 +532,101 @@ def load_mds_data(shot, EFIT = 'EFITRT1', realtime_bolo=True):
     nearest = AEQDSK_data['ATIME'][:-1].searchsorted(tvec)
     inputs = np.array([AEQDSK_data[ename][nearest] for ename in efit_name])
     
-    # --- Data Cleaning & Reshaping (as in original script) ---
-    inputs[-1, (inputs[-1] > 0.3) | (inputs[-1] < -0.3)] = 0
-    inputs[2, inputs[0] > 1.8] = -1.15
-    inputs[0, inputs[0] > 1.8] = 1.25
-    inputs[2, inputs[0] < 0] = -1.15
-    inputs[0, inputs[0] < 0] = 1.25
-    inputs[3, inputs[1] > 1.8] = 1.2
-    inputs[1, inputs[1] > 1.8] = 1.2
-    inputs[3, inputs[1] < 0] = 1.2
-    inputs[1, inputs[1] < 0] = 1.2
-  
+    tmin, tmax = AEQDSK_data['ATIME'][[0,-1]]
+    tind = slice(*tvec.searchsorted([tmin,tmax]))
     
-    return tvec, inputs.T, bolo_brightness.T, legacy_power
+    valid, inputs = clip_EFIT_inputs(inputs)
+
+    print('Invalid points:', np.sum(~valid) )
+
+     
+    return tvec[tind], inputs.T[tind], bolo_brightness.T[tind], legacy_power
         
+ 
+ 
+def W_ring_campaign():
+    
+    #167501 - 167873
+    
+    # --- Load the saved network ---
+    network_file = 'trained_network_weighted.h5'
+    nn_params = load_network(network_file)
+    
+    P_predicted = {}
+    #for shot in range(167501, 167873):
+    #170115 - 173902
+    for shot in range(190000, 200000):
+    #for shot in range(167252, 168500):
+        #shot = 167873
+        try:
+            tvec, X, Y, legacy_power = load_mds_data(shot, realtime_bolo=False)
+            if tvec[-1] < 3000:
+                continue
+
+            # --- Apply the network to the new data ---
+            P_predicted[shot] = tvec, apply_model(nn_params,  X, Y)
+            print(shot)
+        except:
+            pass
+        
+    #TODO select the range of W ring campaign 
+    embed()
+    
+    P_axis = []
+    P_core = []
+    shot_time = []
+    for shot, (tvec, data) in P_predicted.items():
+        if shot > 167252:
+            P_axis.append(data[:,power_params.index('P_axis')])
+            P_core.append(data[:,power_params.index('P_core')])
+            shot_time.append(shot + tvec/1e4)
+    P_axis = np.hstack(P_axis)
+    P_core = np.hstack(P_core)
+    shot_time = np.hstack(shot_time)
+
+    
+    plt.plot(shot_time, P_axis)
+    plt.show()
+        
+
+    P_axis = Phat_real[:,power_params.index('P_axis')]*1e6
+    P_core = Phat_real[:,power_params.index('P_core')]*1e6
+            
+    import matplotlib.colors as colors
+    plt.hist2d(P_axis/1e6,P_axis / (P_core-P_axis),cmap='Grays',  density=True,
+               bins=100,range=[(0,1),(0,1.5)],norm=colors.LogNorm(),cmin=0.09,cmax=110)
+    plt.xlabel('$P_{axis}$ [MW]')
+    plt.ylabel('$P_{axis} / (P_{core}-P_{axis})$')
+    plt.colorbar(label="Density")
+    plt.show()
+    
+
+    import matplotlib.colors as colors
+    plt.hist2d(P_core/1e6,P_axis/1e6,cmap='Grays',  density=True,
+               bins=100,range=[(0,2),(0,1)],norm=colors.LogNorm(),
+               cmin=0.09, cmax=110)
+               #cmin=0.09,cmax=110)
+    plt.xlabel('$P_{core}$ [MW]')
+    plt.ylabel('$P_{axis}$ [MW]')
+    plt.colorbar(label="Density")
+    plt.show()    
+        
+    embed()
+      
  
 # ------------------------
 # Example Usage
 # ------------------------
 if __name__ == "__main__":
+    
+    
+    #W_ring_campaign()
+  
+    
     # --- Load the saved network ---
-    network_file = 'trained_network.h5'
-    mlp_params, Wlin, W0 = load_network(network_file)
+    network_file = 'trained_network_weighted.h5'
+ 
+    nn_params = load_network(network_file)
     
     import sys
     real_time = False
@@ -367,36 +640,60 @@ if __name__ == "__main__":
     
         
     power_tomo = load_tomography(shot)
+  
     
+    power_tomo_old = load_GAPROFILES(shot)
+
     
     tvec, X, Y, legacy_power = load_mds_data(shot, realtime_bolo=real_time)
     
 
     # --- Apply the network to the new data ---
-    P_predicted = apply_model(mlp_params, Wlin, W0, X, Y)
-    
+    P_predicted = apply_model(nn_params,  X, Y)
+      
 
     f,ax = plt.subplots(2,5, sharex=True, sharey=True, figsize=(10,8))
     ax = np.ravel(ax)
     for i, p in enumerate(power_params):
         ax[i].set_title(p)
-        ax[i].plot(tvec/1e3,  P_predicted[:,i],'b-',label='NN prediction')
-        
+        ax[i].plot(tvec/1e3,  P_predicted[:,i],'b-', label='Prediction')
         if p in power_tomo:
-            ax[i].plot(power_tomo.get('tvec',0),  power_tomo.get(p,0),'r--',label='PyTOMO')
-
+            ax[i].plot(power_tomo['tvec'],  power_tomo[p],'r--',label='PyTomo')
+        if p in power_tomo_old:
+            ax[i].plot(power_tomo_old['tvec'],  power_tomo_old[p],'g--o',label='GAPROFILES')
       
         if p in legacy_power:
-            ax[i].plot(legacy_power['time']/1e3, legacy_power[p],':',label='MDS+ signal')
-            
-            
+            ax[i].plot(legacy_power['time']/1e3, legacy_power[p],':')
+                        
         ax[i].axhline(0)
-    ax[-1].legend(loc='best')
     ax[0].set_xlim(0, 7)
     ax[0].set_ylim(0, np.median(P_predicted[P_predicted[:,-1] > np.median(P_predicted[:,-1]),-1]) * 2)
+    ax[-1].legend(loc='best')
     plt.tight_layout()
     f.savefig(f'bolo_{shot}')
 
+
+    Paxis = P_predicted[:,power_params.index('P_axis')] > 2e5
+    peaking = P_predicted[:,power_params.index('P_axis')] / (P_predicted[:,power_params.index('P_core')]-P_predicted[:,power_params.index('P_axis')])
+    
+    accumulation = peaking > 0.3
+    accumulation &= Paxis  > 0.4
+    
+    
+    plt.figure()
+    plt.plot(tvec/1e3,  peaking)
+    plt.ylim(0,1)
+    plt.xlim(0,6)
+    plt.plot(tvec[accumulation]/1e3,  peaking[accumulation],'g.')
+    
+
+    try:
+        peaking = power_tomo['P_axis'] / (power_tomo['P_core']-power_tomo['P_axis'])
+        plt.plot(power_tomo['tvec'],  peaking)
+    except:
+        pass
+        
+    
     
     plt.show()
     

@@ -32,15 +32,32 @@ def load_network(filepath):
         # Load linear part parameters
         Wlin = f['linear/Wlin'][:]
         W0 = f['linear/W0'][:]
+        low_rank_basis = f['basis'][:]
+        pinv_basis = f['inv_basis'][:]
 
     print(f"Network loaded successfully from {filepath}")
     print(f"  - MLP layers: {len(params)}")
     print(f"  - Input dimension: {Wlin.shape[0]}")
     print(f"  - Output dimension: {W0.shape[0]}")
-    return params, Wlin, W0
+    
+    missing_channels =  ['U01', 'L11', 'L19', 'L20']
 
+    bolo_channels = [fan+'%.2d'%ich for fan in 'UL' for ich in range(1,25)]
+    
+    invalid = np.array([ch in missing_channels for ch in bolo_channels])
+    
+    #remove invalid channels from the data projection basis
+    pinv_low_rank_basis = np.linalg.pinv(low_rank_basis[~invalid])
+    pinv_low_rank_basis_full = np.zeros_like(low_rank_basis.T)
+    pinv_low_rank_basis_full[:,~invalid] = pinv_low_rank_basis
+    print(pinv_basis)
+    
+    #print(pinv_low_rank_basis_full-pinv_basis)
+    exit()
+    
+    return params, Wlin, W0, pinv_low_rank_basis_full
 
-def create_keras_model(params, Wlin, W0):
+def create_keras_model(params, Wlin, W0, pinv_basis):
     """
     Creates a Keras model that replicates the custom network architecture.
     
@@ -51,6 +68,7 @@ def create_keras_model(params, Wlin, W0):
     """
     input_dim = Wlin.shape[0]
     output_dim = W0.shape[0]
+    basis_dim = pinv_basis.shape[0]
     
     # Input layer
     inputs = layers.Input(shape=(input_dim,), name='input')
@@ -67,7 +85,7 @@ def create_keras_model(params, Wlin, W0):
     for i, (W, b) in enumerate(params[:-1]):
         x = layers.Dense(
             W.shape[1],
-            activation='silu',
+            activation='relu',
             name=f'mlp_layer_{i}'
         )(x)
     
@@ -80,9 +98,17 @@ def create_keras_model(params, Wlin, W0):
         name=f'mlp_layer_{len(params)-1}'
     )(x)
     
+ 
     # Combine linear and MLP branches
-    outputs = layers.Add(name='output')([linear_branch, mlp_branch])
+    y = layers.Add(name='output_flat')([linear_branch, mlp_branch])
     
+    
+    outputs = layers.Reshape(
+        (output_dim // basis_dim, basis_dim),
+        name='output'
+    )(y)
+    
+ 
     # Create model
     model = Model(inputs=inputs, outputs=outputs, name='boloNN_keras_model')
     
@@ -108,11 +134,11 @@ def convert_to_keras(input_h5_path, output_h5_path=None):
         output_h5_path: Path to save the Keras model (default: input_h5_path with '_keras.h5' suffix)
     """
     # Load network parameters
-    params, Wlin, W0 = load_network(input_h5_path)
+    params, Wlin, W0, pinv_basis = load_network(input_h5_path)
     
     # Create Keras model
     print("\nCreating Keras model...")
-    model = create_keras_model(params, Wlin, W0)
+    model = create_keras_model(params, Wlin, W0, pinv_basis)
     
     # Print model summary
     print("\nModel Summary:")
@@ -132,7 +158,7 @@ def convert_to_keras(input_h5_path, output_h5_path=None):
 if __name__ == '__main__':
     import sys
     
-    input_file = 'trained_network.h5'
+    input_file = 'trained_network_weighted.h5'
     if len(sys.argv) > 1:
         input_file = sys.argv[1]
     
@@ -145,6 +171,7 @@ if __name__ == '__main__':
     # Save the keras model
     if output_file is None:
         output_file = input_file.replace('.h5', '_keras.h5')
+        
     print(f"\nSaving Keras model to {output_file} (again)...")
     model.save(output_file)
     print(f"✓ Keras model saved successfully (again)!")

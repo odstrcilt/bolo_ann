@@ -15,24 +15,30 @@ os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.9"
 jax.config.update('jax_platform_name', 'gpu')
 efit_name = ['RXPT1', 'RXPT2', 'ZXPT1' ,'ZXPT2' , 'Z0','R0' ,'TRIBOT', 'TRITOP', 'KAPPA' ,'AMINOR', 'DRSEP']
 power_params = ['P_FarSOL','P_ldivL','P_ldivR','P_udivL','P_udivR','P_edge','P_core','P_axis','P_core_all','P_tot']
-power_params = ['P_SOL','P_ldivL','P_ldivR','P_udivL','P_udivR','P_ldiv','P_udiv', 'P_core','P_axis','P_tot']
+power_params = ['P_SOL','P_ldivi','P_ldivo','P_udivi','P_udivo','P_ldiv','P_udiv', 'P_core','P_axis','P_tot']
 
 
 # ------------------------
 # Exp Data loading
 # ------------------------
 def clip_EFIT_inputs(EFIT_values):
-    EFIT_values[-1, EFIT_values[-1] > 0.3] = 0
-    EFIT_values[-1, EFIT_values[-1] < -0.3] = 0
-    EFIT_values[2, EFIT_values[0] > 1.8] = -1.15
-    EFIT_values[0, EFIT_values[0] > 1.8] = 1.25
-    EFIT_values[2, EFIT_values[0] < 0] = -1.15
-    EFIT_values[0, EFIT_values[0] < 0] = 1.25
-    EFIT_values[3, EFIT_values[1] > 1.8] = 1.2
-    EFIT_values[1, EFIT_values[1] > 1.8] = 1.2
-    EFIT_values[3, EFIT_values[1] < 0] = 1.2
-    EFIT_values[1, EFIT_values[1] < 0] = 1.2
-    return EFIT_values
+    
+    missing_lower_Xpoint = EFIT_values[0] < 0
+    missing_upper_Xpoint = EFIT_values[1] < 0
+ 
+    
+    valid = EFIT_values[0] != 0
+ 
+    EFIT_values[-1, EFIT_values[-1] > 0.3] = 0.06 #usualy missing one X-point
+    EFIT_values[-1, EFIT_values[-1] < -0.3] = -0.07#usualy missing one X-point
+    EFIT_values[2, missing_lower_Xpoint] = -1.33
+    EFIT_values[0, missing_lower_Xpoint] = 1.28
+    EFIT_values[3, missing_upper_Xpoint] = 1.4
+    EFIT_values[1, missing_upper_Xpoint] = 1.23
+    
+    
+    return valid, EFIT_values
+
     
 def load_real_data(file_path):
     with h5py.File(file_path, "r") as f:
