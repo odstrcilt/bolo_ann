@@ -50,11 +50,7 @@ def load_network(filepath):
     pinv_low_rank_basis = np.linalg.pinv(low_rank_basis[~invalid])
     pinv_low_rank_basis_full = np.zeros_like(low_rank_basis.T)
     pinv_low_rank_basis_full[:,~invalid] = pinv_low_rank_basis
-    print(pinv_basis)
-    
-    #print(pinv_low_rank_basis_full-pinv_basis)
-    exit()
-    
+  
     return params, Wlin, W0, pinv_low_rank_basis_full
 
 def create_keras_model(params, Wlin, W0, pinv_basis):
@@ -152,8 +148,28 @@ def convert_to_keras(input_h5_path, output_h5_path=None):
     model.save(output_h5_path)
     print(f"✓ Keras model saved successfully!")
     
-    return model
+    return model, pinv_basis
 
+def print_c_2d_array(arr, name="A", dtype="float", max_per_line=5):
+    """
+    Print a 2D array as C code, wrapping rows to max_per_line elements.
+    """
+    arr = list(arr)
+    n, m = len(arr), len(arr[0])
+
+    suffix = "f" if dtype == "float" else ""
+    #print(f"static const {dtype} {name}[{n}][{m}] = {{")
+    print('pinv of projection basis:')
+    for row in arr:
+        print("    {", end="")
+        for i, x in enumerate(row):
+            if i % max_per_line == 0 and i != 0:
+                print("\n     ", end="")
+            print(f"{x:.8e}{suffix}", end="")
+            if i != m - 1:
+                print(", ", end="")
+        print("},")
+    print("};")
 
 if __name__ == '__main__':
     import sys
@@ -166,7 +182,7 @@ if __name__ == '__main__':
     if len(sys.argv) > 2:
         output_file = sys.argv[2]
     
-    model = convert_to_keras(input_file, output_file)
+    model, pinv_basis = convert_to_keras(input_file, output_file)
 
     # Save the keras model
     if output_file is None:
@@ -185,3 +201,4 @@ if __name__ == '__main__':
     print(f"  Output shape: {output.shape}")
     print(f"  Output sample: {output[0, :5]}")
 
+    print_c_2d_array(pinv_basis, name="cost", dtype="float")
