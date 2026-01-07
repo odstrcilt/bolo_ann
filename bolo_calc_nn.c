@@ -7,7 +7,7 @@
 #include "boloNN.h"
 
 
-#define N_BOLO_CH 64
+#define N_BOLO_CH 48
 #define N_EFIT_INPUT 11
 #define N_POWER_OUT 10
 #define N_BASIS 16
