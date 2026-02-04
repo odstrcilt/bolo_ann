@@ -5,6 +5,7 @@ from matplotlib.pylab import plt
 
 
 efit_name = ['RXPT1', 'RXPT2', 'ZXPT1' ,'ZXPT2' , 'Z0','R0' ,'TRIBOT', 'TRITOP', 'KAPPA' ,'AMINOR', 'DRSEP']
+#power_params = ['P_SOL','P_ldivL','P_ldivR','P_udivL','P_udivR','P_ldiv','P_udiv', 'P_core','P_axis','P_tot']
 power_params = ['P_SOL','P_ldivi','P_ldivo','P_udivi','P_udivo','P_ldiv','P_udiv', 'P_core','P_axis','P_tot']
 
 
@@ -52,9 +53,6 @@ def load_network(filepath):
         Wlin = f['linear/Wlin'][:]
         W0 = f['linear/W0'][:]
         low_rank_basis = f['basis'][:]
-        inv_basis = f['inv_basis'][:]
-      
-      
       
     print(f"Network loaded successfully from {filepath}")
     
@@ -71,9 +69,6 @@ def load_network(filepath):
     pinv_low_rank_basis_full = np.zeros_like(low_rank_basis.T)
     pinv_low_rank_basis_full[:,~invalid] = pinv_low_rank_basis
     
-    print(inv_basis)
-    
-    print(pinv_low_rank_basis_full)
     
     return params, Wlin, W0, pinv_low_rank_basis_full
 
@@ -130,19 +125,7 @@ def get_region_mask(t, rvec, zvec, ATIME, PsinEmiss,BdMat,ZXPT1,ZXPT2,RXPT1,RXPT
     mask[(Z > ZXPT2[a_nearest] - 0.2) & (div_up_side > 0) & (ZXPT2[a_nearest] > -2)&(PsinEmiss < 1.2)] = 4 # udivi
     mask[ BdMat ] = -1
     
-    #BUG it it consistent? OR SOL is just everything outside of 0.9?
-
-    #if t  > 10:
-        ##embed()
-        #plt.pcolormesh(R,Z,mask, cmap='jet')
-        #plt.contour(R,Z,1-PsinEmiss, levels = 1-np.arange(0,1.5,0.1)[::-1],colors='gray')
-        #plt.axis('equal')
-        #plt.xlabel('R [m]')
-        #plt.ylabel('z [m]')
-        #plt.show()
-        
-        
-
+ 
         
             
     return mask
@@ -408,6 +391,77 @@ def load_tomography(shot):
     return emiss_regions
 
 
+
+def generate_tomography(shot, emiss_regions):
+
+ 
+   
+    import MDSplus
+    mdsserver = 'localhost'
+    MDSconn = MDSplus.Connection(mdsserver)
+
+    tree = 'EFIT01'
+    MDSconn.openTree(tree, shot)
+    SSIMAG = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:SSIMAG').data()
+    valid = SSIMAG != 0
+    SSIMAG = SSIMAG[valid]
+
+    #PSIN = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:PSIN').data()
+    PSIRZ = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:PSIRZ').data()[valid]
+    GTIME = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:GTIME').data()[valid]/1e3
+    SSIBRY = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:SSIBRY').data()[valid]
+
+    Rgrid = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:R').data()
+    Zgrid = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:Z').data()
+    ATIME = MDSconn.get(f'\\{tree}::TOP.RESULTS.AEQDSK:ATIME').data()[valid]/1e3
+
+    limiter = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK.LIM').data() 
+
+    AEQDSK_data = {}
+    for ename in efit_name:
+        AEQDSK_data[ename] = MDSconn.get(f'\\{tree}::TOP.RESULTS.AEQDSK:{ename}').data()[valid]
+    
+
+
+    PSIN = (PSIRZ - SSIMAG[:,None,None])/(SSIBRY-SSIMAG)[:,None,None]
+ 
+    from skimage.measure import points_in_poly
+    
+    R,Z = np.meshgrid(Rgrid, Zgrid)
+
+    grid = np.array([R.flatten(),Z.flatten()]).T
+     
+    pip = points_in_poly(grid, limiter)
+
+    boundary = ~pip.reshape(R.shape)
+ 
+    dS = np.diff(Rgrid)[0] * np.diff(Zgrid)[0] 
+  
+    emiss_2d = np.zeros((len(emiss_regions['tvec']), len(Rgrid), len(Zgrid)), dtype='single')
+
+    #from scipy.interpolate import RectBivariateSpline
+    for it, t in enumerate(emiss_regions['tvec']):
+        g_nearest = np.argmin(np.abs(GTIME-t))
+      
+
+        mask = get_region_mask(t, Rgrid, Zgrid, ATIME,PSIN[g_nearest] , boundary, 
+                                AEQDSK_data['ZXPT1'],AEQDSK_data['ZXPT2'],
+                                AEQDSK_data['RXPT1'],AEQDSK_data['RXPT2'],
+                                AEQDSK_data['R0'],   AEQDSK_data['Z0'])
+         
+        emiss_2d[it][mask == 1] = emiss_regions['P_ldivo'][it] / np.sum(R[mask == 1] * dS * 2 * np.pi)
+        emiss_2d[it][mask == 2] = emiss_regions['P_ldivi'][it] / np.sum(R[mask == 2] * dS * 2 * np.pi)
+        emiss_2d[it][mask == 3] = emiss_regions['P_udivo'][it] / np.sum(R[mask == 3] * dS * 2 * np.pi)
+        emiss_2d[it][mask == 4] = emiss_regions['P_udivi'][it] / np.sum(R[mask == 4] * dS * 2 * np.pi)
+        emiss_2d[it][mask == 7] = emiss_regions['P_axis'][it] / np.sum(R[mask == 7] * dS * 2 * np.pi)
+        emiss_2d[it][mask == 6] = (emiss_regions['P_core'][it] - emiss_regions['P_axis'][it])/np.sum(R[mask == 6] * dS * 2 * np.pi)
+        emiss_2d[it][mask == 5] = emiss_regions['P_SOL'][it] / np.sum(R[mask == 5] * dS * 2 * np.pi)
+ 
+    
+    return Rgrid, Zgrid, emiss_regions['tvec'], emiss_2d, limiter, PSIN, GTIME
+
+
+
 # ------------------------
 # Data loading
 # ------------------------
@@ -429,8 +483,29 @@ def clip_EFIT_inputs(EFIT_values):
     
     return valid, EFIT_values
 
+def load_pcs_data(shot ):
 
-
+    try:
+        import MDSplus
+        mdsserver = 'localhost'
+        MDSconn = MDSplus.Connection(mdsserver)
+   
+        legacy_power = {}
+        legacy_power['P_tot'] =  MDSconn.get(f'PTDATA("dgsnptot", {shot})').data()
+        legacy_power['P_ldiv'] = MDSconn.get(f'PTDATA("dgsnpdivl", {shot})').data()
+        legacy_power['P_udiv'] = MDSconn.get(f'PTDATA("dgsnpdivu", {shot})').data()
+        legacy_power['P_udivo'] = MDSconn.get(f'PTDATA("dgsnpdivuo", {shot})').data()
+        legacy_power['P_udivi'] = MDSconn.get(f'PTDATA("dgsnpdivui", {shot})').data()
+        legacy_power['P_ldivo'] = MDSconn.get(f'PTDATA("dgsnpdivlo", {shot})').data()
+        legacy_power['P_ldivi'] = MDSconn.get(f'PTDATA("dgsnpdivli", {shot})').data()
+        legacy_power['P_core'] =  MDSconn.get(f'PTDATA("dgsnpcore", {shot})').data()
+        legacy_power['P_SOL'] =   MDSconn.get(f'PTDATA("dgsnpsol", {shot})').data()
+        legacy_power['P_axis'] =  MDSconn.get(f'_x = PTDATA("dgsnpaxis", {shot})').data()
+        legacy_power['time'] = MDSconn.get('dim_of(_x)').data() #ms
+    except:
+        return None
+    return legacy_power
+ 
 def load_mds_data(shot, EFIT = 'EFIT01', realtime_bolo=True):
 
     if realtime_bolo:
@@ -440,8 +515,6 @@ def load_mds_data(shot, EFIT = 'EFIT01', realtime_bolo=True):
         print('Load standart BOLO data')
     
     
-    #EFIT = 'EFITRT1'
-
     import MDSplus
     mdsserver = 'localhost'
     MDSconn = MDSplus.Connection(mdsserver)
@@ -469,11 +542,14 @@ def load_mds_data(shot, EFIT = 'EFIT01', realtime_bolo=True):
         MDSconn.openTree('BOLOM', shot)
 
     from scipy.signal import lfilter
-    def lowpass_filter(x, alpha):
+    def lowpass_filter(x, tau, dt):
+        alpha = dt / (dt + tau)
+        print(alpha)
         b = [alpha]
         a = [1, -(1 - alpha)]
         return lfilter(b, a, x)
-    
+        
+    tau_smooth = 0.04
     bolo_brightness = []
     #load realtime bolometer power 
     for fan in ['U', 'L']:
@@ -490,10 +566,15 @@ def load_mds_data(shot, EFIT = 'EFIT01', realtime_bolo=True):
                 else:
                     data = MDSconn.get(f'_x=PTDATA2("DGSDPWR{ch}", {shot})').data()
                 #this adds a small delay, but negligible compared to the existing delay in the data
+                #if tvec is None:
+                    #tvec = MDSconn.get('dim_of(_x)').data()  #ms
+                #dt = np.diff(tvec[tvec > 0]).mean() / 1e3
                 data = lowpass_filter(data, alpha=0.01)
                 
             else:
                 data = MDSconn.get(TDIcall+f'BOL_{ch}_P').data() #W
+                
+                
             if len(data) <= 1:
                 raise Exception(f'No data for channel {ch}')
          
@@ -613,15 +694,108 @@ def W_ring_campaign():
         
     embed()
       
+      
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider
+
+def plot_time_imshow(R, Z, t, data, limiter, psin, tvec_psin):
+    """
+    t     : (nt,)
+    R, Z  : (nR,), (nZ,)
+    data  : (nt, nR, nZ)
+    """
+    nt = data.shape[0]
+
+    fig, ax = plt.subplots(figsize=(6,10))
+    plt.subplots_adjust(bottom=0.2)
+    extend = [R.min(), R.max(), Z.min(), Z.max()]
+    im = ax.imshow(
+        data[0]/1e6,
+        extent=extend,
+        origin="lower",
+        aspect="equal",
+        cmap='hot_r',
+        interpolation='nearest'
+    )
+    ax.axis(extend)
+    cbar = plt.colorbar(im, ax=ax, label='Radiated power [MW/m$^3$]')
+    ax.set_xlabel("R [m]")
+    ax.set_ylabel("Z [m]")
+    ax.set_title(f"t = {t[0]:.3f}")
+ 
+    pos_levels = np.linspace(0,1,11)
+    cs = {}
+    cs['pos'] = ax.contour(
+        R, Z, psin[0],
+        levels=pos_levels,
+        linewidths=0.5,
+        colors="k",
+    )
+    neg_levels = np.linspace(1,2,11)[1:]
+    cs['neg'] = ax.contour(
+        R, Z, psin[0],
+        levels=neg_levels,
+        colors="k",
+        linewidths=0.5,
+        linestyles='--',
+    )   
+    cs['zero'] = ax.contour(
+        R, Z, psin[0],
+        levels=[0],
+        colors="k",
+        linewidths=2,
+        linestyles='-',
+    )    
+ 
+    ax.plot(limiter[:,0], limiter[:,1], c='k')
+
+    ax_slider = plt.axes([0.2, 0.08, 0.6, 0.03])
+    slider = Slider(ax_slider, "time", 0, nt - 1, valinit=0, valstep=1)
+
+    def update(i):
+        i = int(i)
+        frame = data[i]/1e6
+        im.set_data(frame)
+        im.set_clim(0, frame.max())
+        cbar.update_normal(im)
+        ax.set_title(f"t = {t[i]:.3f}")
+        
+        # Remove previous contours
+        for key in ["pos", "neg", 'zero']:
+            cs[key].remove()
+            
+        # Draw new contours
+        it = np.argmin(np.abs(tvec_psin - t[i]))
+        cs["pos"] = ax.contour(R, Z, psin[it], levels=neg_levels, colors="k",linestyles='--',linewidths=0.5,  )
+        cs["neg"] = ax.contour(R, Z, psin[it], levels=pos_levels, colors="k",linewidths=0.5, )
+        cs["zero"] = ax.contour(R, Z, psin[it], levels=[0], colors="k",linewidths=2, )
+
+        
+        fig.canvas.draw_idle()
+
+    slider.on_changed(update)
+
+    def on_key(event):
+        i = int(slider.val)
+        if event.key == "right":
+            i = min(i + 1, nt - 1)
+        elif event.key == "left":
+            i = max(i - 1, 0)
+        else:
+            return
+        slider.set_val(i)
+
+    fig.canvas.mpl_connect("key_press_event", on_key)
+
+ 
  
 # ------------------------
 # Example Usage
 # ------------------------
 if __name__ == "__main__":
     
-    
-    #W_ring_campaign()
-  
+ 
     
     # --- Load the saved network ---
     network_file = 'trained_network_weighted.h5'
@@ -644,13 +818,19 @@ if __name__ == "__main__":
     
     power_tomo_old = load_GAPROFILES(shot)
 
-    
+    pcs_power  = load_pcs_data(shot )
     tvec, X, Y, legacy_power = load_mds_data(shot, realtime_bolo=real_time)
-    
+ 
 
     # --- Apply the network to the new data ---
     P_predicted = apply_model(nn_params,  X, Y)
       
+    powers = {p:P_predicted[:,i] for i,p in enumerate(power_params)}
+    powers['tvec'] = tvec / 1e3
+     
+    
+    plot_time_imshow(*generate_tomography(shot, powers))
+ 
 
     f,ax = plt.subplots(2,5, sharex=True, sharey=True, figsize=(10,8))
     ax = np.ravel(ax)
@@ -662,8 +842,14 @@ if __name__ == "__main__":
         if p in power_tomo_old:
             ax[i].plot(power_tomo_old['tvec'],  power_tomo_old[p],'g--o',label='GAPROFILES')
       
-        if p in legacy_power:
-            ax[i].plot(legacy_power['time']/1e3, legacy_power[p],':')
+        if pcs_power is not None:
+            if p in pcs_power:
+                ax[i].plot(pcs_power['time']/1e3, pcs_power[p],':', label='PCS')
+        
+        elif p in legacy_power:
+            ax[i].plot(legacy_power['time']/1e3, legacy_power[p],':', label='legacy')
+                
+                        
                         
         ax[i].axhline(0)
     ax[0].set_xlim(0, 7)
@@ -672,30 +858,8 @@ if __name__ == "__main__":
     plt.tight_layout()
     f.savefig(f'bolo_{shot}')
 
-
-    Paxis = P_predicted[:,power_params.index('P_axis')] > 2e5
-    peaking = P_predicted[:,power_params.index('P_axis')] / (P_predicted[:,power_params.index('P_core')]-P_predicted[:,power_params.index('P_axis')])
-    
-    accumulation = peaking > 0.3
-    accumulation &= Paxis  > 0.4
-    
-    
-    plt.figure()
-    plt.plot(tvec/1e3,  peaking)
-    plt.ylim(0,1)
-    plt.xlim(0,6)
-    plt.plot(tvec[accumulation]/1e3,  peaking[accumulation],'g.')
-    
-
-    try:
-        peaking = power_tomo['P_axis'] / (power_tomo['P_core']-power_tomo['P_axis'])
-        plt.plot(power_tomo['tvec'],  peaking)
-    except:
-        pass
-        
-    
+ 
     
     plt.show()
     
-
- 
+    
