@@ -66,7 +66,7 @@ def load_network(filepath):
     
     
     pinv_low_rank_basis = np.linalg.pinv(low_rank_basis[~invalid])
-    pinv_low_rank_basis_full = np.zeros_like(low_rank_basis.T)
+    pinv_low_rank_basis_full = np.zeros_like(low_rank_basis).T
     pinv_low_rank_basis_full[:,~invalid] = pinv_low_rank_basis
     
     
