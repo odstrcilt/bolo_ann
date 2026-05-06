@@ -1,0 +1,25 @@
+name: bolo_nn
+channels:
+  - conda-forge
+  - ga-fdp
+dependencies:
+ 
+  - numpy
+  - scipy
+  - jax
+  - flax
+  # Data / IO
+  - hdf5
+  - h5py
+  - libprotobuf=6.31.*
+  - protobuf
+  # ZMQ
+  - pyzmq
+  # Physics / fusion codes
+  - toksearch_d3d
+  - mdsplus-xrdcl
+  - freetds
+  - ptdata>=1.4.6
+  # Visualization
+  - matplotlib
+  - contourpy
