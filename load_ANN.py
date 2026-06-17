@@ -5,9 +5,9 @@ from matplotlib.pylab import plt
 
 
 efit_name = ['RXPT1', 'RXPT2', 'ZXPT1' ,'ZXPT2' , 'Z0','R0' ,'TRIBOT', 'TRITOP', 'KAPPA' ,'AMINOR', 'DRSEP']
-#power_params = ['P_SOL','P_ldivL','P_ldivR','P_udivL','P_udivR','P_ldiv','P_udiv', 'P_core','P_axis','P_tot']
 power_params = ['P_SOL','P_ldivi','P_ldivo','P_udivi','P_udivo','P_ldiv','P_udiv', 'P_core','P_axis','P_tot']
 
+#efit_name = ['RXPT1', 'RXPT2', 'ZXPT1' ,'ZXPT2' , 'Z0','R0' ,'TRIBOT', 'TRITOP', 'KAPPA' ,  'DRSEP']
 
 
 # ------------------------
@@ -48,6 +48,7 @@ def load_network(filepath):
             b = f[f'mlp/layer_{i}/b'][:]
             params.append([W, b])
             i += 1
+            print(i, b.shape)
 
         # Load linear part parameters
         Wlin = f['linear/Wlin'][:]
@@ -66,7 +67,7 @@ def load_network(filepath):
     
     
     pinv_low_rank_basis = np.linalg.pinv(low_rank_basis[~invalid])
-    pinv_low_rank_basis_full = np.zeros_like(low_rank_basis).T
+    pinv_low_rank_basis_full = np.zeros_like(low_rank_basis.T)
     pinv_low_rank_basis_full[:,~invalid] = pinv_low_rank_basis
     
     
@@ -103,6 +104,26 @@ def apply_model(nn_params, X, Y ):
     return P_hat
 
  
+import numpy as np
+from scipy.signal import butter, filtfilt
+
+def lowpass_filter(t, x, cutoff_freq, order=3):
+    """
+    t : time array (uniformly spaced)
+    x : signal
+    cutoff_freq : cutoff frequency [Hz]
+    order : filter order
+    """
+    dt = np.mean(np.diff(t))
+    fs = 1.0 / dt  # sampling frequency
+    print(fs)
+    nyq = 0.5 * fs
+    normal_cutoff = cutoff_freq / nyq
+
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+    y = filtfilt(b, a, x)
+
+    return y
 
 def get_region_mask(t, rvec, zvec, ATIME, PsinEmiss,BdMat,ZXPT1,ZXPT2,RXPT1,RXPT2,R0,Z0):
     
@@ -116,7 +137,6 @@ def get_region_mask(t, rvec, zvec, ATIME, PsinEmiss,BdMat,ZXPT1,ZXPT2,RXPT1,RXPT
    
     mask = PsinEmiss  * 0 # FarSOL
     mask[PsinEmiss<1.2] = 5 # sol
-    #mask[PsinEmiss<1.0] = 8 # ped #BUG    
     mask[PsinEmiss<0.9] = 6 # core #BUG
     mask[PsinEmiss<0.2] = 7 # axis
     mask[(Z < ZXPT1[a_nearest] + 0.2) & (div_low_side > 0) & (ZXPT1[a_nearest] > -2)&(PsinEmiss < 1.2) ] = 1 # ldivo
@@ -159,12 +179,9 @@ def get_powers(power, mask):
 
 
 
-def load_efit(shot, efit='EFIT01', load_psi=True):
+def load_efit(MDSconn, shot, efit='EFIT01', load_psi=True):
     
     
-    import MDSplus
-    mdsserver = 'localhost'
-    MDSconn = MDSplus.Connection(mdsserver)
 
     tree = efit
     MDSconn.openTree(tree, shot)
@@ -176,9 +193,12 @@ def load_efit(shot, efit='EFIT01', load_psi=True):
         AEQDSK[ename] = MDSconn.get(f'\\{tree}::TOP.RESULTS.AEQDSK:{ename}').data() 
     
     ATIME = MDSconn.get(f'\\{tree}::TOP.RESULTS.AEQDSK:ATIME').data() /1e3
+    
+    #valid, AEQDSK = clip_EFIT_inputs(AEQDSK)
 
-
-    # --- Data Cleaning & Reshaping (as in original script) ---
+    ## --- Data Cleaning & Reshaping (as in original script) ---
+    
+    
     AEQDSK['DRSEP'][AEQDSK['DRSEP'] > 0.3] = 0.06
     AEQDSK['DRSEP'][AEQDSK['DRSEP'] < -0.3] = -0.07
 
@@ -189,6 +209,23 @@ def load_efit(shot, efit='EFIT01', load_psi=True):
     AEQDSK['RXPT1'][missing_lower_Xpoint] = 1.28
     AEQDSK['ZXPT2'][missing_upper_Xpoint] = 1.4
     AEQDSK['RXPT2'][missing_upper_Xpoint] = 1.23
+    
+    #missing_lower_Xpoint = EFIT_values[0] < 0
+    #missing_upper_Xpoint = EFIT_values[1] < 0
+ 
+    
+    #valid = EFIT_values[0] != 0
+ 
+    #EFIT_values[-1, EFIT_values[-1] > 0.3] = 0.06 #usualy missing one X-point
+    #EFIT_values[-1, EFIT_values[-1] < -0.3] = -0.07#usualy missing one X-point
+    #EFIT_values[2, missing_lower_Xpoint] = -1.33
+    #EFIT_values[0, missing_lower_Xpoint] = 1.28
+    #EFIT_values[3, missing_upper_Xpoint] = 1.4
+    #EFIT_values[1, missing_upper_Xpoint] = 1.23
+    
+    
+    
+    
     
     #TODO invalid EFIT?? 
     valid = AEQDSK['RXPT1'] != 0
@@ -223,7 +260,7 @@ def load_efit(shot, efit='EFIT01', load_psi=True):
 
     
 
-def load_GAPROFILES(shot):
+def load_GAPROFILES(MDSconn, shot):
 
     import os, re
     folder = './GAPROFILES/'
@@ -263,7 +300,7 @@ def load_GAPROFILES(shot):
  
     nz, nr = len(Z_vals), len(R_vals)
     
-    ATIME, AEQDSK_data = load_efit(shot, efit='EFIT01', load_psi=False)
+    ATIME, AEQDSK_data = load_efit(MDSconn, shot, efit='EFIT01', load_psi=False)
  
 
  
@@ -309,25 +346,26 @@ def load_GAPROFILES(shot):
     return emiss_regions
 
 
-def load_tomography(shot):
+def load_tomography(MDSconn, shot, SXR=False):
 
  
-        
     import glob
-
+    
+    path = 'SXR' if SXR else 'Database'
+    print(path)
     try:
-        file = glob.glob(f"./Database/Emissivity_*_{shot}.npz")[0]
+        file = glob.glob(f"./{path}/Emissivity_*_{shot}.npz")[0]
     except IndexError:
         return {}
 
         
     emiss = dict(np.load( file, allow_pickle=True))
 
-    import MDSplus
-    mdsserver = 'localhost'
-    MDSconn = MDSplus.Connection(mdsserver)
+    #import MDSplus
+    #mdsserver = 'localhost'
+    #MDSconn = MDSplus.Connection(mdsserver)
 
-    tree = 'EFITRT1'
+    tree = 'EFIT01'
     MDSconn.openTree(tree, shot)
     SSIMAG = MDSconn.get(f'\\{tree}::TOP.RESULTS.GEQDSK:SSIMAG').data()
     valid = SSIMAG != 0
@@ -364,7 +402,7 @@ def load_tomography(shot):
     R,Z = np.meshgrid(rvec, zvec)
 
     PsinEmiss = np.zeros_like(gres)
-     
+    
     emiss_regions = {}
 
     from scipy.interpolate import RectBivariateSpline
@@ -378,8 +416,13 @@ def load_tomography(shot):
                                 AEQDSK_data['RXPT1'],AEQDSK_data['RXPT2'],
                                 AEQDSK_data['R0'],   AEQDSK_data['Z0'])
         
+    
         power = np.single(gres[:,:,it] * R  * 2 * np.pi * dr * dz) #W per cell
- 
+        
+        #if emiss['inputs'].item()['tok_index'] != 25:
+            #print('Not bolo data!!')
+        
+        
         for k, v in get_powers(power, mask).items():
             emiss_regions.setdefault(k,[])
             emiss_regions[k].append(v)
@@ -387,13 +430,13 @@ def load_tomography(shot):
     emiss_regions = {p: np.array(v) for p,v in emiss_regions.items()}
     emiss_regions['tvec'] = emiss['tvec']
     
+ 
     
     return emiss_regions
 
 
 
 def generate_tomography(shot, emiss_regions):
-
  
    
     import MDSplus
@@ -437,7 +480,7 @@ def generate_tomography(shot, emiss_regions):
  
     dS = np.diff(Rgrid)[0] * np.diff(Zgrid)[0] 
   
-    emiss_2d = np.zeros((len(emiss_regions['tvec']), len(Rgrid), len(Zgrid)), dtype='single')
+    emiss_2d = np.zeros((len(emiss_regions['tvec']), len(Rgrid), len(Zgrid)), dtype='single')*np.nan
 
     #from scipy.interpolate import RectBivariateSpline
     for it, t in enumerate(emiss_regions['tvec']):
@@ -449,13 +492,22 @@ def generate_tomography(shot, emiss_regions):
                                 AEQDSK_data['RXPT1'],AEQDSK_data['RXPT2'],
                                 AEQDSK_data['R0'],   AEQDSK_data['Z0'])
          
-        emiss_2d[it][mask == 1] = emiss_regions['P_ldivo'][it] / np.sum(R[mask == 1] * dS * 2 * np.pi)
-        emiss_2d[it][mask == 2] = emiss_regions['P_ldivi'][it] / np.sum(R[mask == 2] * dS * 2 * np.pi)
-        emiss_2d[it][mask == 3] = emiss_regions['P_udivo'][it] / np.sum(R[mask == 3] * dS * 2 * np.pi)
-        emiss_2d[it][mask == 4] = emiss_regions['P_udivi'][it] / np.sum(R[mask == 4] * dS * 2 * np.pi)
-        emiss_2d[it][mask == 7] = emiss_regions['P_axis'][it] / np.sum(R[mask == 7] * dS * 2 * np.pi)
-        emiss_2d[it][mask == 6] = (emiss_regions['P_core'][it] - emiss_regions['P_axis'][it])/np.sum(R[mask == 6] * dS * 2 * np.pi)
-        emiss_2d[it][mask == 5] = emiss_regions['P_SOL'][it] / np.sum(R[mask == 5] * dS * 2 * np.pi)
+        #emiss_2d[it][mask == 1] = emiss_regions['P_ldivo'][it] / np.sum(R[mask == 1] * dS * 2 * np.pi)
+        #emiss_2d[it][mask == 2] = emiss_regions['P_ldivi'][it] / np.sum(R[mask == 2] * dS * 2 * np.pi)
+        #emiss_2d[it][mask == 3] = emiss_regions['P_udivo'][it] / np.sum(R[mask == 3] * dS * 2 * np.pi)
+        #emiss_2d[it][mask == 4] = emiss_regions['P_udivi'][it] / np.sum(R[mask == 4] * dS * 2 * np.pi)
+        #emiss_2d[it][mask == 7] = emiss_regions['P_axis'][it] / np.sum(R[mask == 7] * dS * 2 * np.pi)
+        #emiss_2d[it][mask == 6] = (emiss_regions['P_core'][it] - emiss_regions['P_axis'][it])/np.sum(R[mask == 6] * dS * 2 * np.pi)
+        #emiss_2d[it][mask == 5] = emiss_regions['P_SOL'][it] / np.sum(R[mask == 5] * dS * 2 * np.pi)
+ 
+ 
+        emiss_2d[it][mask == 1] = 1
+        emiss_2d[it][mask == 2] = 2
+        emiss_2d[it][mask == 3] = 3
+        emiss_2d[it][mask == 4] = 4
+        emiss_2d[it][mask == 7] = 5
+        emiss_2d[it][mask == 6] = 6
+        emiss_2d[it][mask == 5] = 7
  
     
     return Rgrid, Zgrid, emiss_regions['tvec'], emiss_2d, limiter, PSIN, GTIME
@@ -483,30 +535,50 @@ def clip_EFIT_inputs(EFIT_values):
     
     return valid, EFIT_values
 
-def load_pcs_data(shot ):
+def load_pcs_data(MDSconn, shot ):
 
     try:
-        import MDSplus
-        mdsserver = 'localhost'
-        MDSconn = MDSplus.Connection(mdsserver)
-   
-        legacy_power = {}
-        legacy_power['P_tot'] =  MDSconn.get(f'PTDATA("dgsnptot", {shot})').data()
-        legacy_power['P_ldiv'] = MDSconn.get(f'PTDATA("dgsnpdivl", {shot})').data()
-        legacy_power['P_udiv'] = MDSconn.get(f'PTDATA("dgsnpdivu", {shot})').data()
-        legacy_power['P_udivo'] = MDSconn.get(f'PTDATA("dgsnpdivuo", {shot})').data()
-        legacy_power['P_udivi'] = MDSconn.get(f'PTDATA("dgsnpdivui", {shot})').data()
-        legacy_power['P_ldivo'] = MDSconn.get(f'PTDATA("dgsnpdivlo", {shot})').data()
-        legacy_power['P_ldivi'] = MDSconn.get(f'PTDATA("dgsnpdivli", {shot})').data()
-        legacy_power['P_core'] =  MDSconn.get(f'PTDATA("dgsnpcore", {shot})').data()
-        legacy_power['P_SOL'] =   MDSconn.get(f'PTDATA("dgsnpsol", {shot})').data()
-        legacy_power['P_axis'] =  MDSconn.get(f'_x = PTDATA("dgsnpaxis", {shot})').data()
-        legacy_power['time'] = MDSconn.get('dim_of(_x)').data() #ms
-    except:
-        return None
-    return legacy_power
  
-def load_mds_data(shot, EFIT = 'EFIT01', realtime_bolo=True):
+        pcs_power = {}
+        pcs_power['P_tot'] =  MDSconn.get(f'PTDATA("dgsnptot", {shot})').data()
+        pcs_power['P_ldiv'] = MDSconn.get(f'PTDATA("dgsnpdivl", {shot})').data()
+        pcs_power['P_udiv'] = MDSconn.get(f'PTDATA("dgsnpdivu", {shot})').data()
+        pcs_power['P_udivo'] = MDSconn.get(f'PTDATA("dgsnpdivuo", {shot})').data()
+        pcs_power['P_udivi'] = MDSconn.get(f'PTDATA("dgsnpdivui", {shot})').data()
+        pcs_power['P_ldivo'] = MDSconn.get(f'PTDATA("dgsnpdivlo", {shot})').data()
+        pcs_power['P_ldivi'] = MDSconn.get(f'PTDATA("dgsnpdivli", {shot})').data()
+        pcs_power['P_core'] =  MDSconn.get(f'PTDATA("dgsnpcore", {shot})').data()
+        pcs_power['P_SOL'] =   MDSconn.get(f'PTDATA("dgsnpsol", {shot})').data()
+        pcs_power['P_axis'] =  MDSconn.get(f'_x = PTDATA("dgsnpaxis", {shot})').data()
+        pcs_power['time'] = MDSconn.get('dim_of(_x)').data() #ms
+    except Exception as e:
+        print(e)
+        try:
+            
+            pcs_power = {}
+            pcs_power['P_ldiv'] = MDSconn.get(f'PTDATA("DGSRADDIVL", {shot})').data()
+            pcs_power['P_udiv'] = MDSconn.get(f'PTDATA("DGSRADDIVU", {shot})').data()
+            pcs_power['P_core'] =  MDSconn.get(f'PTDATA("DGSRADCORE", {shot})').data()
+            pcs_power['P_tot'] =  MDSconn.get(f'_x =PTDATA("DGSRADTOT", {shot})').data()
+            pcs_power['P_tot'] =  MDSconn.get(f'_x =PTDATA("DGSRADSUM", {shot})').data()
+            pcs_power['time'] = MDSconn.get('dim_of(_x)').data() #ms
+       
+            pcs_power['P_ldiv'] = lowpass_filter(pcs_power['time']/1e3, pcs_power['P_ldiv'], 1e1, order=3)
+            pcs_power['P_core'] = lowpass_filter(pcs_power['time']/1e3, pcs_power['P_core'], 1e1, order=3)
+            pcs_power['P_udiv'] = lowpass_filter(pcs_power['time']/1e3, pcs_power['P_udiv'], 1e1, order=3)
+            pcs_power['P_tot']  = lowpass_filter(pcs_power['time']/1e3, pcs_power['P_tot'], 1e1, order=3)
+
+        except Exception as e:
+            print(e)
+  
+        
+
+    if 'P_tot' not in pcs_power or np.all(pcs_power['P_tot'] == 0):
+        return None
+ 
+    return pcs_power
+ 
+def load_mds_data(MDSconn, shot, EFIT = 'EFIT01', realtime_bolo=True):
 
     if realtime_bolo:
         print('Load realtime BOLO data')
@@ -514,16 +586,22 @@ def load_mds_data(shot, EFIT = 'EFIT01', realtime_bolo=True):
     else:
         print('Load standart BOLO data')
     
-    
-    import MDSplus
-    mdsserver = 'localhost'
-    MDSconn = MDSplus.Connection(mdsserver)
+    EFIT = 'EFITRT1'
+
+    #import MDSplus
+    #mdsserver = 'localhost'
+    #MDSconn = MDSplus.Connection(mdsserver)
 
    
-    MDSconn.openTree(EFIT, shot)
-    AEQDSK_data = {}
-    for ename in efit_name + ['ATIME']:
-        AEQDSK_data[ename] = MDSconn.get(f'\\{EFIT}::TOP.RESULTS.AEQDSK:{ename}').data()
+   
+    ATIME, AEQDSK_data = load_efit(MDSconn,  shot, efit='EFIT01', load_psi=False)
+    AEQDSK_data['ATIME'] = ATIME
+
+
+    #MDSconn.openTree(EFIT, shot)
+    #AEQDSK_data = {}
+    #for ename in efit_name + ['ATIME']:
+        #AEQDSK_data[ename] = MDSconn.get(f'\\{EFIT}::TOP.RESULTS.AEQDSK:{ename}').data()
     
         
     etendue = { 'U':  [3.0206e4,2.9034e4,2.8066e4,2.7273e4,2.6635e4,4.0340e4,\
@@ -543,11 +621,12 @@ def load_mds_data(shot, EFIT = 'EFIT01', realtime_bolo=True):
 
     from scipy.signal import lfilter
     def lowpass_filter(x, tau, dt):
+        print(dt)
         alpha = dt / (dt + tau)
-        print(alpha)
+        #print(alpha)
         b = [alpha]
         a = [1, -(1 - alpha)]
-        return lfilter(b, a, x)
+        return lfilter(b, a, x, axis=-1)
         
     tau_smooth = 0.04
     bolo_brightness = []
@@ -567,24 +646,29 @@ def load_mds_data(shot, EFIT = 'EFIT01', realtime_bolo=True):
                     data = MDSconn.get(f'_x=PTDATA2("DGSDPWR{ch}", {shot})').data()
                 #this adds a small delay, but negligible compared to the existing delay in the data
                 #if tvec is None:
-                    #tvec = MDSconn.get('dim_of(_x)').data()  #ms
+                #    tvec = MDSconn.get('dim_of(_x)').data()  #ms
                 #dt = np.diff(tvec[tvec > 0]).mean() / 1e3
-                data = lowpass_filter(data, alpha=0.01)
+              #  data = lowpass_filter(data, tau=tau_smooth)
                 
             else:
                 data = MDSconn.get(TDIcall+f'BOL_{ch}_P').data() #W
                 
                 
             if len(data) <= 1:
+                embed()
                 raise Exception(f'No data for channel {ch}')
          
             data *= etendue[fan][ich] * 1e4 #W/m^2
             bolo_brightness.append(data) 
             
-             
-    tvec = MDSconn.get('dim_of(_x)').data()  #ms
-    bolo_brightness = np.array(bolo_brightness)
     
+    tvec = MDSconn.get('dim_of(_x)').data()/1e3  # s
+    #print('Fetched')
+    bolo_brightness = np.array(bolo_brightness)
+    if realtime_bolo:
+        dt = np.diff(tvec[tvec > 0]).mean() 
+        #print(tau_smooth, dt, bolo_brightness.shape)
+        bolo_brightness = lowpass_filter(bolo_brightness, tau=tau_smooth, dt=dt)
     
         
     #NOTE Important correct one broken channel
@@ -596,30 +680,39 @@ def load_mds_data(shot, EFIT = 'EFIT01', realtime_bolo=True):
 
 
     legacy_power = {}
-    legacy_power['time'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.TIME').data() #ms
-    legacy_power['P_tot'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.PRAD.PRAD_TOT').data() #W
-    legacy_power['P_ldiv'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.PRAD.PRAD_DIVL').data() #W
-    legacy_power['P_udiv'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.PRAD.PRAD_DIVU').data() #W  
-    legacy_power['P_core'] = MDSconn.get('\\BOLOM::TOP.BOLFIT01.ONED.POWER_CORE').data() #W
-    legacy_power['P_SOL'] = MDSconn.get('_x=\\BOLOM::TOP.BOLFIT01.ONED.POWER_SOL').data() #W
+    try:
+        legacy_power['time'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.TIME').data() #ms
+        legacy_power['P_tot'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.PRAD.PRAD_TOT').data() #W
+        legacy_power['P_ldiv'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.PRAD.PRAD_DIVL').data() #W
+        legacy_power['P_udiv'] = MDSconn.get('\\BOLOM::TOP.PRAD_01.PRAD.PRAD_DIVU').data() #W  
+    except:
+        pass
+    try:
+        legacy_power['P_core'] = MDSconn.get('\\BOLOM::TOP.BOLFIT01.ONED.POWER_CORE').data() #W
+        legacy_power['P_SOL'] = MDSconn.get('_x=\\BOLOM::TOP.BOLFIT01.ONED.POWER_SOL').data() #W
+        legacy_power['P_axis'] = MDSconn.get('_x=\\BOLOM::TOP.BOLFIT01.ONED.POWER_1THIRD').data() #W
+        tvec_bolo = MDSconn.get('dim_of(_x)').data()  #ms
+        legacy_power['P_core'] = np.interp(legacy_power['time'], tvec_bolo, legacy_power['P_core'])
+        legacy_power['P_SOL'] = np.interp(legacy_power['time'], tvec_bolo, legacy_power['P_SOL'])
+        legacy_power['P_axis'] = np.interp(legacy_power['time'], tvec_bolo, legacy_power['P_axis'])
+
+        
+    except:
+        pass
     
-    tvec_bolo = MDSconn.get('dim_of(_x)').data()  #ms
-    legacy_power['P_core'] = np.interp(legacy_power['time'], tvec_bolo, legacy_power['P_core'])
-    legacy_power['P_SOL'] = np.interp(legacy_power['time'], tvec_bolo, legacy_power['P_SOL'])
-    
-  
 
     #reinterpolate on realtime bolo timegrid 
+    #embed()
     nearest = AEQDSK_data['ATIME'][:-1].searchsorted(tvec)
     inputs = np.array([AEQDSK_data[ename][nearest] for ename in efit_name])
     
     tmin, tmax = AEQDSK_data['ATIME'][[0,-1]]
-    tind = slice(*tvec.searchsorted([tmin,tmax]))
-    
+    #tind = slice(*tvec.searchsorted([tmin,tmax]))
+    tind = slice(None,None)
     valid, inputs = clip_EFIT_inputs(inputs)
 
     print('Invalid points:', np.sum(~valid) )
-
+    
      
     return tvec[tind], inputs.T[tind], bolo_brightness.T[tind], legacy_power
         
@@ -645,7 +738,7 @@ def W_ring_campaign():
                 continue
 
             # --- Apply the network to the new data ---
-            P_predicted[shot] = tvec, apply_model(nn_params,  X, Y)
+            P_predicted[shot] = apply_model(nn_params,  X, Y)
             print(shot)
         except:
             pass
@@ -715,7 +808,7 @@ def plot_time_imshow(R, Z, t, data, limiter, psin, tvec_psin):
         extent=extend,
         origin="lower",
         aspect="equal",
-        cmap='hot_r',
+        cmap='jet',
         interpolation='nearest'
     )
     ax.axis(extend)
@@ -757,7 +850,7 @@ def plot_time_imshow(R, Z, t, data, limiter, psin, tvec_psin):
         i = int(i)
         frame = data[i]/1e6
         im.set_data(frame)
-        im.set_clim(0, frame.max())
+        im.set_clim(0, np.nanmax(frame))
         cbar.update_normal(im)
         ax.set_title(f"t = {t[i]:.3f}")
         
@@ -796,9 +889,12 @@ def plot_time_imshow(R, Z, t, data, limiter, psin, tvec_psin):
 if __name__ == "__main__":
     
  
-    
+    import MDSplus
+    mdsserver = 'atlas.gat.com'
+    MDSconn = MDSplus.Connection(mdsserver)
+
     # --- Load the saved network ---
-    network_file = 'trained_network_weighted.h5'
+    network_file = 'ANN/trained_network_new.h5'
  
     nn_params = load_network(network_file)
     
@@ -810,53 +906,153 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1:
         shot = int(sys.argv[1])
     else:
-        shot = 203401
+        shot = 206535
     
+     
         
-    power_tomo = load_tomography(shot)
-  
+    power_tomo = load_tomography(MDSconn, shot)
+    # power_SXR = load_tomography(MDSconn, shot, SXR=True)
+
     
-    power_tomo_old = load_GAPROFILES(shot)
+    power_tomo_old = load_GAPROFILES(MDSconn, shot)
+    labels = ['P_tot', 'P_core','P_axis', 'P_SOL','P_ldiv', 'P_ldivi','P_ldivo','P_udiv', 'P_udivi','P_udivo'  ]
 
-    pcs_power  = load_pcs_data(shot )
-    tvec, X, Y, legacy_power = load_mds_data(shot, realtime_bolo=real_time)
- 
+    pcs_power  = load_pcs_data(MDSconn, shot )
+    tvec, X, Y, legacy_power = load_mds_data(MDSconn, shot, realtime_bolo=real_time)
 
+    #embed()
     # --- Apply the network to the new data ---
     P_predicted = apply_model(nn_params,  X, Y)
-      
-    powers = {p:P_predicted[:,i] for i,p in enumerate(power_params)}
-    powers['tvec'] = tvec / 1e3
-     
     
-    plot_time_imshow(*generate_tomography(shot, powers))
+    powers = {p:P_predicted[:,i] for i,p in enumerate(power_params)}
+    powers['tvec'] = tvec 
+    
+    p =  P_predicted[:,labels.index('P_tot')].copy()
+    p[tvec < 0.5] = 0
+    i = np.argmax(p)
+    p[:i-10] = 0
+    p[i+10:] = 0
+    p[i-10:i+10] -= p[i-10:i+10].min()
+    power = np.trapz( p, tvec,)
+    #embed()
+    print(shot, power)
+
+    #plt.figure(shot)
+    #plt.plot(tvec, P_predicted[:,labels.index('P_tot')]/1e6)
+    #plt.plot(tvec,  p/1e6)
+    #plt.axvline(tvec[i])
+    ##plt.plot()
+    ##plt.plot(legacy_power['time']/1e3, legacy_power['P_tot']/1e6 )
+    #plt.xlim(0,5)
+    #plt.show()
+
+        
+    
+    #plot_time_imshow(*generate_tomography(shot, powers))
  
 
-    f,ax = plt.subplots(2,5, sharex=True, sharey=True, figsize=(10,8))
+    #f,ax = plt.subplots(2,5, sharex=True, sharey=True, figsize=(10,8))
+
+    labels = ['P_tot', 'P_core','P_axis', 'P_SOL','P_ldiv', 'P_ldivi','P_ldivo','P_udiv', 'P_udivi','P_udivo'  ]
+    #labels = ['P_axis']
+    f,ax = plt.subplots((len(labels)+1) % 2+1,(len(labels)+1) // 2, sharex=True, sharey=True, figsize=(10,8))
     ax = np.ravel(ax)
-    for i, p in enumerate(power_params):
-        ax[i].set_title(p)
-        ax[i].plot(tvec/1e3,  P_predicted[:,i],'b-', label='Prediction')
+
+    for i, p in enumerate(labels):
+        j = power_params.index(p)
+        
+        ax[i].text(0.07, 0.89, ('1/3x ' if p == 'P_tot' else '') +p + ' [MW]'  ,
+                transform=ax[i].transAxes,
+                ha='left', va='top',
+                color='k', fontsize=11)  
+        
+        scale = 1/3 if p == 'P_tot' else 1
+        ax[i].plot(tvec,  P_predicted[:,j]/1e6*scale,'b-', label='ANN')
         if p in power_tomo:
-            ax[i].plot(power_tomo['tvec'],  power_tomo[p],'r--',label='PyTomo')
+            ax[i].plot(power_tomo['tvec'],  power_tomo[p]/1e6*scale,'r--',label='PyTomo')
+            
+        #if p in power_SXR:
+            #ax[i].plot(power_SXR['tvec'],  power_SXR[p]/1e6*scale,'m-..',label='PyTomo SXR')
+            
         if p in power_tomo_old:
-            ax[i].plot(power_tomo_old['tvec'],  power_tomo_old[p],'g--o',label='GAPROFILES')
+            ax[i].plot(power_tomo_old['tvec'],  power_tomo_old[p]/1e6*scale,'g--o',label='GAPROFILES')
       
         if pcs_power is not None:
             if p in pcs_power:
-                ax[i].plot(pcs_power['time']/1e3, pcs_power[p],':', label='PCS')
+                ax[i].plot(pcs_power['time']/1e3, pcs_power[p]/1e6*scale,':', label='old real-time',zorder=0)
         
-        elif p in legacy_power:
-            ax[i].plot(legacy_power['time']/1e3, legacy_power[p],':', label='legacy')
-                
+        if p in legacy_power:
+            ax[i].plot(legacy_power['time']/1e3, legacy_power[p]/1e6*scale,'y-.', label='old offline',zorder=0)
+        
+        
+        
+        
+        
+        if i > 4:
+            ax[i].set_xlabel('Time [s]')
                         
                         
         ax[i].axhline(0)
     ax[0].set_xlim(0, 7)
-    ax[0].set_ylim(0, np.median(P_predicted[P_predicted[:,-1] > np.median(P_predicted[:,-1]),-1]) * 2)
-    ax[-1].legend(loc='best')
+    ax[0].set_ylim(0, np.median(P_predicted[P_predicted[:,-1] > np.median(P_predicted[:,-1]),-1]) * 2/1e6*scale)
+    ax[0].legend(loc='best')
     plt.tight_layout()
     f.savefig(f'bolo_{shot}')
+
+
+    #plt.figure()
+    #plt.plot(P_predicted[:,power_params.index('P_tot')])
+    #plt.plot(P_predicted[:,power_params.index('P_core')] + P_predicted[:,power_params.index('P_SOL')] + P_predicted[:,power_params.index('P_ldiv')] +P_predicted[:,power_params.index('P_udiv')])
+    
+    #plt.figure()
+    #plt.plot(P_predicted[:,power_params.index('P_udiv')])
+    #plt.plot(P_predicted[:,power_params.index('P_udivi')] + P_predicted[:,power_params.index('P_udivo')] )
+    
+    #plt.figure()
+    #plt.plot(P_predicted[:,power_params.index('P_ldiv')])
+    #plt.plot(P_predicted[:,power_params.index('P_ldivi')] + P_predicted[:,power_params.index('P_ldivo')] )
+    
+    #plt.show()
+    
+        #labels = ['P_tot', 'P_core','P_axis', 'P_SOL','P_ldiv', 'P_ldivi','P_ldivo','P_udiv', 'P_udivi','P_udivo'  ]
+
+
+        
+    #f,ax = plt.subplots(1, sharex=True, sharey=True, figsize=(5,5))
+    #ax = np.array(ax,ndmin=1)
+    ##for i, p in enumerate(power_params):
+    #i = -1
+    ##ax[i].text(0.07, 0.89, ('1/3x ' if p == 'P_tot' else '') +p + ' [MW]'  ,
+            ##transform=ax[i].transAxes,
+            ##ha='left', va='top',
+            ##color='k', fontsize=11)  
+    #p == 'P_tot' 
+    #scale = 1
+    #ax[i].set_title( '$P_{tot}$ [MW]')
+
+    #ax[i].plot(tvec ,  P_predicted[:,i]/1e6*scale,'b-', label='Prediction')
+    #if p in power_tomo:
+        #ax[i].plot(power_tomo['tvec'],  power_tomo[p]/1e6*scale,'r--',label='PyTomo')
+    #if p in power_tomo_old:
+        #ax[i].plot(power_tomo_old['tvec'],  power_tomo_old[p]/1e6*scale,'g--o',label='GAPROFILES')
+    
+    #if pcs_power is not None:
+        #if p in pcs_power:
+            #ax[i].plot(pcs_power['time']/1e3, pcs_power[p]/1e6*scale,':', label='PCS')
+    
+    #elif p in legacy_power:
+        #ax[i].plot(legacy_power['time']/1e3, legacy_power[p]/1e6*scale,':g', label='legacy')
+    
+    ##if i > 4:
+    #ax[i].set_xlabel('Time [s]')
+                    
+                    
+    #ax[i].axhline(0)
+    #ax[0].set_xlim(0, 7)
+    #ax[0].set_ylim(0, np.median(P_predicted[P_predicted[:,-1] > np.median(P_predicted[:,-1]),-1]) * 2/1e6*scale)
+    #ax[0].legend(loc='best')
+    #plt.tight_layout()
+    ##f.savefig(f'bolo_{shot}')
 
  
     

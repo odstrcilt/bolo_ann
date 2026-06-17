@@ -174,7 +174,7 @@ def print_c_2d_array(arr, name="A", dtype="float", max_per_line=5):
 if __name__ == '__main__':
     import sys
     
-    input_file = 'trained_network_weighted.h5'
+    input_file = 'ANN/trained_network_new.h5'
     if len(sys.argv) > 1:
         input_file = sys.argv[1]
     

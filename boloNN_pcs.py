@@ -181,7 +181,7 @@ print('Invalid points:', np.sum(~valid) )
 
 X = inputs.T
 
-mlp_params, Wlin, W0, basis, channels = load_network('trained_network_weighted.h5')
+mlp_params, Wlin, W0, basis, channels = load_network('ANN/trained_network_new.h5')
 
 pinv_basis = remove_broken_channels(basis, channels, missing_channels)
 
