@@ -888,7 +888,7 @@ if __name__ == "__main__":
     
  
     import MDSplus
-    mdsserver = 'localhost'
+    mdsserver = 'atlas.gat.com'
     MDSconn = MDSplus.Connection(mdsserver)
 
     # --- Load the saved network ---
@@ -910,7 +910,7 @@ if __name__ == "__main__":
     if shot > 196700:
         missing_channels += ['L22']
 
-    nn_params = load_network(network_file, missing_channels)
+    nn_params = load_network('ANN/' + network_file, missing_channels)
 
     print(shot)
     power_tomo = load_tomography(MDSconn, shot)
