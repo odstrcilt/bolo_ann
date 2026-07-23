@@ -9,7 +9,6 @@ power_params = ['P_SOL','P_ldivi','P_ldivo','P_udivi','P_udivo','P_ldiv','P_udiv
 
 #efit_name = ['RXPT1', 'RXPT2', 'ZXPT1' ,'ZXPT2' , 'Z0','R0' ,'TRIBOT', 'TRITOP', 'KAPPA' ,  'DRSEP']
 
-
 # ------------------------
 # Model Definition
 # ------------------------
@@ -37,7 +36,7 @@ def predict(params, Wlin, W0, x):
 # ------------------------
 # Network Loading
 # ------------------------
-def load_network(filepath):
+def load_network(filepath, missing_channels):
     """Loads the network parameters from an HDF5 file into NumPy arrays."""
     params = []
     with h5py.File(filepath, 'r') as f:
@@ -56,16 +55,12 @@ def load_network(filepath):
         low_rank_basis = f['basis'][:]
       
     print(f"Network loaded successfully from {filepath}")
-    
-    
-    missing_channels =  ['U01', 'L11', 'L19', 'L20']
-    #missing_channels +=  ['U10', 'L13', 'L16', 'L12']            
+           
     bolo_channels = [fan+'%.2d'%ich for fan in 'UL' for ich in range(1,25)]
                     
     
     invalid = np.array([ch in missing_channels for ch in bolo_channels])
-    
-    
+   
     pinv_low_rank_basis = np.linalg.pinv(low_rank_basis[~invalid])
     pinv_low_rank_basis_full = np.zeros_like(low_rank_basis.T)
     pinv_low_rank_basis_full[:,~invalid] = pinv_low_rank_basis
@@ -101,7 +96,7 @@ def apply_model(nn_params, X, Y ):
     P_hat = np.einsum('aw,bw,bta->bt', pinv_low_rank_basis, Y, W_hat)  # (Nt,n_p)
 
 
-    return P_hat
+    return P_hat, W_hat
 
  
 import numpy as np
@@ -180,7 +175,7 @@ def get_powers(power, mask):
 
 
 def load_efit(MDSconn, shot, efit='EFIT01', load_psi=True):
-    
+    print(efit)
     
 
     tree = efit
@@ -578,7 +573,7 @@ def load_pcs_data(MDSconn, shot ):
  
     return pcs_power
  
-def load_mds_data(MDSconn, shot, EFIT = 'EFIT01', realtime_bolo=True):
+def load_mds_data(MDSconn, shot, missing_channels, EFIT = 'EFIT01', realtime_bolo=True):
 
     if realtime_bolo:
         print('Load realtime BOLO data')
@@ -586,7 +581,7 @@ def load_mds_data(MDSconn, shot, EFIT = 'EFIT01', realtime_bolo=True):
     else:
         print('Load standart BOLO data')
     
-    EFIT = 'EFITRT1'
+    #EFIT = 'EFITRT1'
 
     #import MDSplus
     #mdsserver = 'localhost'
@@ -594,7 +589,7 @@ def load_mds_data(MDSconn, shot, EFIT = 'EFIT01', realtime_bolo=True):
 
    
    
-    ATIME, AEQDSK_data = load_efit(MDSconn,  shot, efit='EFIT01', load_psi=False)
+    ATIME, AEQDSK_data = load_efit(MDSconn,  shot, efit=EFIT, load_psi=False)
     AEQDSK_data['ATIME'] = ATIME
 
 
@@ -614,7 +609,10 @@ def load_mds_data(MDSconn, shot, EFIT = 'EFIT01', realtime_bolo=True):
             2.9458e4,2.9565e4,2.9756e4,3.0032e4,3.0397e4,0.6406e4]}
     
     #channels not availible in realtme 
-    missing_channels =  ['U01', 'L11', 'L19', 'L20']
+    #missing_channels =  ['U01', 'L11', 'L19', 'L20']
+    
+    
+    
     if not realtime_bolo:
         TDIcall = "_x=\\BOLOM::TOP.PRAD_01.POWER:"
         MDSconn.openTree('BOLOM', shot)
@@ -655,7 +653,7 @@ def load_mds_data(MDSconn, shot, EFIT = 'EFIT01', realtime_bolo=True):
                 
                 
             if len(data) <= 1:
-                embed()
+                #embed()
                 raise Exception(f'No data for channel {ch}')
          
             data *= etendue[fan][ich] * 1e4 #W/m^2
@@ -672,10 +670,10 @@ def load_mds_data(MDSconn, shot, EFIT = 'EFIT01', realtime_bolo=True):
     
         
     #NOTE Important correct one broken channel
-    if shot > 196700:
-        bolo_brightness[45] = (bolo_brightness[44]+bolo_brightness[46]) / 2
+    #if shot > 196700:
+        #bolo_brightness[45] = (bolo_brightness[44]+bolo_brightness[46]) / 2
  
-    
+    #embed()
     MDSconn.openTree('BOLOM', shot)
 
 
@@ -890,13 +888,12 @@ if __name__ == "__main__":
     
  
     import MDSplus
-    mdsserver = 'atlas.gat.com'
+    mdsserver = 'localhost'
     MDSconn = MDSplus.Connection(mdsserver)
 
     # --- Load the saved network ---
-    network_file = 'ANN/trained_network_new.h5'
+    network_file = 'trained_network_new.h5'
  
-    nn_params = load_network(network_file)
     
     import sys
     real_time = False
@@ -908,8 +905,14 @@ if __name__ == "__main__":
     else:
         shot = 206535
     
-     
-        
+    
+    missing_channels =  ['U01', 'L11', 'L19', 'L20']
+    if shot > 196700:
+        missing_channels += ['L22']
+
+    nn_params = load_network(network_file, missing_channels)
+
+    print(shot)
     power_tomo = load_tomography(MDSconn, shot)
     # power_SXR = load_tomography(MDSconn, shot, SXR=True)
 
@@ -918,43 +921,20 @@ if __name__ == "__main__":
     labels = ['P_tot', 'P_core','P_axis', 'P_SOL','P_ldiv', 'P_ldivi','P_ldivo','P_udiv', 'P_udivi','P_udivo'  ]
 
     pcs_power  = load_pcs_data(MDSconn, shot )
-    tvec, X, Y, legacy_power = load_mds_data(MDSconn, shot, realtime_bolo=real_time)
+    tvec, X, Y, legacy_power = load_mds_data(MDSconn, shot, missing_channels, realtime_bolo=real_time)
 
-    #embed()
     # --- Apply the network to the new data ---
-    P_predicted = apply_model(nn_params,  X, Y)
+    P_predicted, What = apply_model(nn_params,  X, Y)
     
     powers = {p:P_predicted[:,i] for i,p in enumerate(power_params)}
     powers['tvec'] = tvec 
     
-    p =  P_predicted[:,labels.index('P_tot')].copy()
-    p[tvec < 0.5] = 0
-    i = np.argmax(p)
-    p[:i-10] = 0
-    p[i+10:] = 0
-    p[i-10:i+10] -= p[i-10:i+10].min()
-    power = np.trapz( p, tvec,)
-    #embed()
-    print(shot, power)
 
-    #plt.figure(shot)
-    #plt.plot(tvec, P_predicted[:,labels.index('P_tot')]/1e6)
-    #plt.plot(tvec,  p/1e6)
-    #plt.axvline(tvec[i])
-    ##plt.plot()
-    ##plt.plot(legacy_power['time']/1e3, legacy_power['P_tot']/1e6 )
-    #plt.xlim(0,5)
-    #plt.show()
-
-        
     
-    #plot_time_imshow(*generate_tomography(shot, powers))
  
 
-    #f,ax = plt.subplots(2,5, sharex=True, sharey=True, figsize=(10,8))
 
     labels = ['P_tot', 'P_core','P_axis', 'P_SOL','P_ldiv', 'P_ldivi','P_ldivo','P_udiv', 'P_udivi','P_udivo'  ]
-    #labels = ['P_axis']
     f,ax = plt.subplots((len(labels)+1) % 2+1,(len(labels)+1) // 2, sharex=True, sharey=True, figsize=(10,8))
     ax = np.ravel(ax)
 
@@ -979,7 +959,7 @@ if __name__ == "__main__":
       
         if pcs_power is not None:
             if p in pcs_power:
-                ax[i].plot(pcs_power['time']/1e3, pcs_power[p]/1e6*scale,':', label='old real-time',zorder=0)
+                ax[i].plot(pcs_power['time']/1e3, pcs_power[p]/1e6*scale,':', label='real-time',zorder=0)
         
         if p in legacy_power:
             ax[i].plot(legacy_power['time']/1e3, legacy_power[p]/1e6*scale,'y-.', label='old offline',zorder=0)
@@ -997,64 +977,8 @@ if __name__ == "__main__":
     ax[0].set_ylim(0, np.median(P_predicted[P_predicted[:,-1] > np.median(P_predicted[:,-1]),-1]) * 2/1e6*scale)
     ax[0].legend(loc='best')
     plt.tight_layout()
-    f.savefig(f'bolo_{shot}')
+    #f.savefig(f'bolo_{shot}')
 
-
-    #plt.figure()
-    #plt.plot(P_predicted[:,power_params.index('P_tot')])
-    #plt.plot(P_predicted[:,power_params.index('P_core')] + P_predicted[:,power_params.index('P_SOL')] + P_predicted[:,power_params.index('P_ldiv')] +P_predicted[:,power_params.index('P_udiv')])
-    
-    #plt.figure()
-    #plt.plot(P_predicted[:,power_params.index('P_udiv')])
-    #plt.plot(P_predicted[:,power_params.index('P_udivi')] + P_predicted[:,power_params.index('P_udivo')] )
-    
-    #plt.figure()
-    #plt.plot(P_predicted[:,power_params.index('P_ldiv')])
-    #plt.plot(P_predicted[:,power_params.index('P_ldivi')] + P_predicted[:,power_params.index('P_ldivo')] )
-    
-    #plt.show()
-    
-        #labels = ['P_tot', 'P_core','P_axis', 'P_SOL','P_ldiv', 'P_ldivi','P_ldivo','P_udiv', 'P_udivi','P_udivo'  ]
-
-
-        
-    #f,ax = plt.subplots(1, sharex=True, sharey=True, figsize=(5,5))
-    #ax = np.array(ax,ndmin=1)
-    ##for i, p in enumerate(power_params):
-    #i = -1
-    ##ax[i].text(0.07, 0.89, ('1/3x ' if p == 'P_tot' else '') +p + ' [MW]'  ,
-            ##transform=ax[i].transAxes,
-            ##ha='left', va='top',
-            ##color='k', fontsize=11)  
-    #p == 'P_tot' 
-    #scale = 1
-    #ax[i].set_title( '$P_{tot}$ [MW]')
-
-    #ax[i].plot(tvec ,  P_predicted[:,i]/1e6*scale,'b-', label='Prediction')
-    #if p in power_tomo:
-        #ax[i].plot(power_tomo['tvec'],  power_tomo[p]/1e6*scale,'r--',label='PyTomo')
-    #if p in power_tomo_old:
-        #ax[i].plot(power_tomo_old['tvec'],  power_tomo_old[p]/1e6*scale,'g--o',label='GAPROFILES')
-    
-    #if pcs_power is not None:
-        #if p in pcs_power:
-            #ax[i].plot(pcs_power['time']/1e3, pcs_power[p]/1e6*scale,':', label='PCS')
-    
-    #elif p in legacy_power:
-        #ax[i].plot(legacy_power['time']/1e3, legacy_power[p]/1e6*scale,':g', label='legacy')
-    
-    ##if i > 4:
-    #ax[i].set_xlabel('Time [s]')
-                    
-                    
-    #ax[i].axhline(0)
-    #ax[0].set_xlim(0, 7)
-    #ax[0].set_ylim(0, np.median(P_predicted[P_predicted[:,-1] > np.median(P_predicted[:,-1]),-1]) * 2/1e6*scale)
-    #ax[0].legend(loc='best')
-    #plt.tight_layout()
-    ##f.savefig(f'bolo_{shot}')
-
- 
     
     plt.show()
     
